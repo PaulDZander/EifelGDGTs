@@ -1,0 +1,3854 @@
+---
+title: "ELSA_GDGTS_r"
+author: "Paul Zander"
+date: "`r Sys.Date()`"
+output:
+  github_document:
+  html_document:
+    highlight: tango
+    theme: flatly
+    df_print: paged
+    toc: yes
+    toc_float: no
+    code_folding: hide
+  html_notebook:
+    highlight: tango
+    theme: flatly
+    toc: yes
+    toc_float: no
+    code_folding: hide
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warn = -1)
+```
+
+This file contains code to produce plots and calculate statistics related to the publication Zander et al., 2023 (Climate of the Past, https://doi.org/10.5194/egusphere-2023-1960). Any use of data and plots should cite the related publication. 
+
+This file contains additional plots and analyses not included in the final manuscript. A small note: Throughout I use periods (.) in place of apostrophes (') when naming GDGT compounds. So if you see IIIa.. that means IIIa''. 
+
+## Load Packages
+
+```{r load packages}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+Sys.setenv(LANGUAGE = "en")
+# Check and install pacman if neccesary
+if (!require("pacman")) {
+  install.packages("pacman")
+  library(pacman)
+}
+
+# Load libraries
+# these turned off for knitting
+# remotes::install_github("AThibault92/paleoFROG")
+# remotes::install_github("nickmckay/geoChronR")
+pacman::p_load(
+  ggplot2,
+  tidyverse,
+  paleoFROG,
+  ggpmisc,
+  matrixStats,
+  BINCOR,
+  tseries,
+  ggforce,
+  grid,
+  parsnip,
+  workflows,
+  ranger,
+  tidymodels,
+  factoextra,
+  tidyr,
+  gridExtra,
+  khroma,
+  psych,
+  geoChronR,
+  compositions,
+  pastclim,
+  palinsol,
+  RColorBrewer,
+  car,
+  PerformanceAnalytics
+)
+
+source("bayRmbt_predict.R")
+source("bayRmbt_forward.R")
+```
+
+## Load data
+
+```{r load data}
+gdgts_modern <- read.csv("ELSA_GDGTs_modern.csv")
+colnames(gdgts_modern)[15:20] <-
+  c("GDGT0", "GDGT1", "GDGT2", "GDGT3", "Cren", "Cren'")
+gdgts_stack <- read.csv("ELSA_GDGTs_stack.csv")
+colnames(gdgts_stack)[8:13] <-
+  c("GDGT0", "GDGT1", "GDGT2", "GDGT3", "Cren", "Cren'")
+gdgts_stack_with_slumps <- gdgts_stack
+gdgts_stack <-
+  filter(gdgts_stack, !(Sample_ID %in% c(
+    350, 748, 749, 750, 800, 833, 940, 942, 945, 955
+  )))
+
+#oxygen data
+SM_O2 <- read.csv("oxygendataSirocko2012.csv")
+SM_O2 <- SM_O2[, 3:4]
+
+#Tempdata
+SM_temp <- read.csv("tempdataSirocko2012.csv")
+
+# cru_ts4.01 monthly temperature data from 1901-2016, altitude 350 m
+month_temp <- read.csv("monthly_means1901-2016_CRUTS.csv")
+
+XRF <- read.csv("ELSA_XRF_composite_07.05.2023.csv")
+ELSA_20_Corg <- read.csv("ELSA_20_Corg.csv")
+## pollen data
+pollen <- read.csv("ELSA_stack_pollen_Sirocko2022.csv")
+pollen$Tree.Pollen <- as.numeric(pollen$Tree.Pollen)
+pollen <-
+  filter(pollen, is.na(Tree.Pollen) != TRUE)
+
+#ice cores
+NGRIP <- read.csv("./external_data/NGRIP_from_sirocko.csv")
+NGRIP <- na.omit(NGRIP)
+
+EPICA <- read.csv("./external_data/EPICA_temp_Jouzel_2007.csv")
+EPICA$Age_b2k <- EPICA$Age..cal.BP. + 50
+EPICA_CO2 <- read.csv("./external_data/EPICA_CO2_Bereiter2015.csv")
+EPICA_CO2$Age_b2k <- EPICA_CO2$age_gas_calBP + 50
+
+### d15N Greenland ice core temperature composite
+NGRIP_temp_d15N <-
+  read.csv("./external_data/Greenland_Temps/NGRIP_temp_Kindler_2014.csv")
+GISP_temp_hol <-
+  read.csv("./external_data/Greenland_Temps/GISP2_temp_Kobashi_2017.csv")
+Greenland_temp <-
+  data.frame(
+    Age_b2k = c(GISP_temp_hol[GISP_temp_hol$age_GICC05 <= 10000,]$age_GICC05 +
+                  50, NGRIP_temp_d15N[NGRIP_temp_d15N$ageGICC05 >= 10000,]$ageGICC05 + 50),
+    temp =  c((GISP_temp_hol[GISP_temp_hol$age_GICC05 <= 10000,]$temp - (
+      mean(GISP_temp_hol[GISP_temp_hol$age_GICC05 >= 9965,]$temp) - mean(NGRIP_temp_d15N[NGRIP_temp_d15N$ageGICC05 <=
+                                                                                           11580,]$temp)
+    )), NGRIP_temp_d15N[NGRIP_temp_d15N$ageGICC05 >= 10000,]$temp)
+  )
+
+#other external data
+insol_berger <-
+  read.csv("./external_data/Insolation_Berger1991/insol_100kyr.csv")
+MD01_2444_SST <-
+  read.csv("./external_data/MD01-2444_SST_Martrat2007/MD01-2444_SST.csv")
+loess_temp <-
+  read.csv("./external_data/Prudhomme2022_loess/Prudhomme2022_Temps.csv")
+AMOC <-
+  read.csv("./external_data/AMOC_Boehm2015/AMOC_boehm2015.csv")
+
+insol_La04 <- read.csv("./external_data/Insol_La04.csv")
+insol_La04$age_b2k <- -insol_La04$kyr * 1000
+insol_La04$seasonal_gradient <-
+  insol_La04$Insol_June_50N - insol_La04$Insol_Dec_50N
+
+Raberg_22 <- read.csv("./external_data/Raberg22_GDGT_data.csv")
+```
+
+## Raberg22 dataaset exploration
+
+```{r Raberg_22}
+Raberg_22_lakes <-
+  filter(Raberg_22,
+         Sample.group == "Lacustrine",
+         Sample.subtype == "Surface Sediment")
+Raberg_22_lakes$sumIIIa_div_sumIIa <-
+  (Raberg_22_lakes$fIIIa + Raberg_22_lakes$fIIIa.) / (Raberg_22_lakes$fIIa + Raberg_22_lakes$fIIa.)
+plot(Raberg_22_lakes$sumIIIa_div_sumIIa, Raberg_22_lakes$MAF)
+
+#Raberg 2021 equation
+Raberg_22_lakes$fIb_meth <-
+  Raberg_22_lakes$fIb / (Raberg_22_lakes$fIb + Raberg_22_lakes$fIIb + Raberg_22_lakes$fIIIb)
+Raberg_22_lakes$fIIa_meth <-
+  
+  Raberg_22_lakes$fIIa / (Raberg_22_lakes$fIa + Raberg_22_lakes$fIIa + Raberg_22_lakes$fIIIa)
+Raberg_22_lakes$fIIb_meth <-
+  Raberg_22_lakes$fIIb / (Raberg_22_lakes$fIb + Raberg_22_lakes$fIIb + Raberg_22_lakes$fIIIb)
+Raberg_22_lakes$fIIc_meth <-
+  Raberg_22_lakes$fIIc / (Raberg_22_lakes$fIc + Raberg_22_lakes$fIIc + Raberg_22_lakes$fIIIc)
+Raberg_22_lakes$fIIIa_meth <-
+  Raberg_22_lakes$fIIIa / (Raberg_22_lakes$fIa + Raberg_22_lakes$fIIa + Raberg_22_lakes$fIIIa)
+Raberg_22_lakes$fIIIb_meth <-
+  Raberg_22_lakes$fIIIb / (Raberg_22_lakes$fIb + Raberg_22_lakes$fIIb + Raberg_22_lakes$fIIIb)
+Raberg_22_lakes$TMAF_lake_Raberg21 <-
+  92.9 + 63.84 * Raberg_22_lakes$fIb_meth ^ 2 -
+  130.51 * Raberg_22_lakes$fIb_meth -
+  28.77 * Raberg_22_lakes$fIIa_meth ^ 2 -
+  72.28 * Raberg_22_lakes$fIIb_meth ^ 2 -
+  5.88 * Raberg_22_lakes$fIIc_meth ^ 2 +
+  20.89 * Raberg_22_lakes$fIIIa_meth ^ 2 -
+  40.54 * Raberg_22_lakes$fIIIa_meth -
+  80.47 * Raberg_22_lakes$fIIIb_meth
+```
+
+## Calculate indices and Temperatures on modern samples
+
+```{r modern temps data}
+#lake calibrations
+gdgts_modern$MBT5Me <-
+  (gdgts_modern$fIa + gdgts_modern$fIb + gdgts_modern$fIc) / (
+    gdgts_modern$fIa + gdgts_modern$fIb + gdgts_modern$fIc + gdgts_modern$fIIa +
+      gdgts_modern$fIIb + gdgts_modern$fIIc + gdgts_modern$fIIIa
+  )
+# calculate BAYMBT output
+modern_bayMBT_lake_ens <-
+  bayrmbt_predict(
+    gdgts_modern$MBT5Me,
+    prior_mean = 9.5,
+    prior_std = 10,
+    Tmodel = "T0",
+    Type = "lake"
+  )
+gdgts_modern$BAYMBT_lake_TMAF_MartínezSosa21 <-
+  modern_bayMBT_lake_ens[["T"]][, 2]
+#Russell 2018 equations
+gdgts_modern$Index1 <-
+  log10((
+    gdgts_modern$fIa + gdgts_modern$fIb + gdgts_modern$fIc + gdgts_modern$fIIa. + gdgts_modern$fIIIa.
+  ) / (
+    gdgts_modern$fIc + gdgts_modern$fIIa + gdgts_modern$fIIc + gdgts_modern$fIIIa +
+      gdgts_modern$fIIIa.
+  )
+  )
+gdgts_modern$Index1_lake_MAAT_Russell18 <-
+  gdgts_modern$Index1 * 18.79 + 12.22
+gdgts_modern$SFS_lake_MAAT_Russell18 <-
+  23.81 - 31.02 * gdgts_modern$fIIIa - 41.91 * gdgts_modern$fIIb - 51.59 *
+  gdgts_modern$fIIb. - 24.70 * gdgts_modern$fIIa + 68.80 * gdgts_modern$fIb
+#Raberg 2021 equation
+gdgts_modern$fIb_meth <-
+  gdgts_modern$Ib / (gdgts_modern$Ib + gdgts_modern$IIb + gdgts_modern$IIIb)
+gdgts_modern$fIIa_meth <-
+  gdgts_modern$IIa / (gdgts_modern$Ia + gdgts_modern$IIa + gdgts_modern$IIIa)
+gdgts_modern$fIIb_meth <-
+  gdgts_modern$IIb / (gdgts_modern$Ib + gdgts_modern$IIb + gdgts_modern$IIIb)
+gdgts_modern$fIIc_meth <-
+  gdgts_modern$IIc / (gdgts_modern$Ic + gdgts_modern$IIc + gdgts_modern$IIIc)
+gdgts_modern$fIIIa_meth <-
+  gdgts_modern$IIIa / (gdgts_modern$Ia + gdgts_modern$IIa + gdgts_modern$IIIa)
+gdgts_modern$fIIIb_meth <-
+  gdgts_modern$IIIb / (gdgts_modern$Ib + gdgts_modern$IIb + gdgts_modern$IIIb)
+gdgts_modern$TMAF_lake_Raberg21 <-
+  92.9 + 63.84 * gdgts_modern$fIb_meth ^ 2 -
+  130.51 * gdgts_modern$fIb_meth -
+  28.77 * gdgts_modern$fIIa_meth ^ 2 -
+  72.28 * gdgts_modern$fIIb_meth ^ 2 -
+  5.88 * gdgts_modern$fIIc_meth ^ 2 +
+  20.89 * gdgts_modern$fIIIa_meth ^ 2 -
+  40.54 * gdgts_modern$fIIIa_meth -
+  80.47 * gdgts_modern$fIIIb_meth
+
+#soil calibrations
+gdgts_modern$MBT5Me_soil_MAAT_DeJonge14 <-
+  -8.57 + 31.45 * gdgts_modern$MBT5Me
+gdgts_modern$Index1_soil_MAAT_DeJonge14 <-
+  5.05 + 14.86 * gdgts_modern$Index1
+
+modern_bayMBT_soil_ens <-
+  bayrmbt_predict(
+    gdgts_modern$MBT5Me,
+    prior_mean = 9.5,
+    prior_std = 10,
+    Tmodel = "T0",
+    Type = "soil"
+  )
+gdgts_modern$BAYMBT_soil_TMAF_CramptonFlood20 <-
+  modern_bayMBT_soil_ens[["T"]][, 2]
+
+# paleoFROG::run_app()
+# Note, ran Paleofrog through shiny app, must input data in separate file. Paleofrog automatically recalculates fractions with the set they use. Run all models
+paleoFROG_results_modern <-
+  read.csv("paleofrog_ELSA_modern_model_results.csv")
+gdgts_modern$paleoFROG0_soil_TMAF <- paleoFROG_results_modern$FROG0
+gdgts_modern$paleoFROG_soil_MAAT <- paleoFROG_results_modern$FROG
+
+#isoprenoidal indices
+gdgts_modern$BIT <-
+  (
+    gdgts_modern$Ia + gdgts_modern$Ib + gdgts_modern$Ic + gdgts_modern$IIa +
+      gdgts_modern$IIa. + gdgts_modern$IIb + gdgts_modern$IIb. + gdgts_modern$IIc +
+      gdgts_modern$IIc. + gdgts_modern$IIIa + gdgts_modern$IIIa. + gdgts_modern$IIIb +
+      gdgts_modern$IIIb.
+  ) / (
+    gdgts_modern$Ia + gdgts_modern$Ib + gdgts_modern$Ic + gdgts_modern$IIa +
+      gdgts_modern$IIa. + gdgts_modern$IIb + gdgts_modern$IIb. + gdgts_modern$IIc +
+      gdgts_modern$IIc. + gdgts_modern$IIIa + gdgts_modern$IIIa. + gdgts_modern$IIIb +
+      gdgts_modern$IIIb. + gdgts_modern$Cren
+  )
+
+gdgts_modern$MI <-
+  (gdgts_modern$GDGT1 + gdgts_modern$GDGT2 + gdgts_modern$GDGT3) / (
+    gdgts_modern$GDGT1 + gdgts_modern$GDGT2 + gdgts_modern$GDGT3 + gdgts_modern$Cren + gdgts_modern$`Cren'`
+  )
+
+gdgts_modern$TEX86 <-
+  (gdgts_modern$GDGT2 + gdgts_modern$GDGT3 + gdgts_modern$`Cren'`) / (gdgts_modern$GDGT1 +
+                                                                        gdgts_modern$GDGT2 + gdgts_modern$GDGT3 + gdgts_modern$`Cren'`)
+gdgts_modern$LST_powers2010 <- 55.231 * gdgts_modern$TEX86 - 13.955
+gdgts_modern$GDGT0_index <-
+  gdgts_modern$GDGT0 / (gdgts_modern$GDGT0 + gdgts_modern$Cren)
+
+#elevation corrected temperatures using lapse rate from station data. Cruts pixel has average elevation of 350 m
+alt_corr_month_temp <-
+  data.frame(
+    AU = month_temp$x - ((456 - 350) * 0.0066),
+    GM = month_temp$x - ((407 - 350) * 0.0066),
+    WM = month_temp$x - ((484 - 350) * 0.0066),
+    HM = month_temp$x - ((425 - 350) * 0.0066),
+    SM = month_temp$x - ((420 - 350) * 0.0066)
+  )
+TMAF <- colMeans(alt_corr_month_temp[2:12, ])
+MAAT <- colMeans(alt_corr_month_temp)
+
+gdgts_modern$CRUTS_MAAT_alt_corr <-
+  MAAT[as.character(gdgts_modern$Site_ID)]
+
+gdgts_modern$CRUTS_TMAF_alt_corr <-
+  TMAF[as.character(gdgts_modern$Site_ID)]
+
+gdgts_modern_sub <-
+  gdgts_modern #this is an artefect of when I had AU data in the modern CSV, but its been removed now, so this is just a branchoff copy now.
+
+gdgts_modern_temp_estimates <-
+  select(
+    gdgts_modern_sub,
+    BAYMBT_lake_TMAF_MartínezSosa21,
+    Index1_lake_MAAT_Russell18,
+    SFS_lake_MAAT_Russell18,
+    TMAF_lake_Raberg21,
+    MBT5Me_soil_MAAT_DeJonge14,
+    Index1_soil_MAAT_DeJonge14,
+    BAYMBT_soil_TMAF_CramptonFlood20,
+    paleoFROG0_soil_TMAF
+  )
+
+temp_offsets <-
+  cbind(
+    select(gdgts_modern_temp_estimates, contains("MAAT")) - gdgts_modern_sub$CRUTS_MAAT_alt_corr,
+    select(gdgts_modern_temp_estimates, contains("TMAF")) - gdgts_modern_sub$CRUTS_TMAF_alt_corr,
+    gdgts_modern_sub[37:56]
+  )
+```
+
+## comparing distributions in soils and lake samples
+
+```{r soils vs lakes}
+#IIIa/IIa index
+gdgts_modern_sub$sum_IIIa_div_IIa <-
+  (gdgts_modern_sub$fIIIa + gdgts_modern_sub$fIIIa. + gdgts_modern_sub$fIIIa..) /
+  (gdgts_modern_sub$fIIa + gdgts_modern_sub$fIIa.)
+gdgts_modern_sub$iso_index <-
+  (
+    gdgts_modern_sub$fIIIa. + gdgts_modern_sub$fIIIb. +
+      gdgts_modern_sub$fIIIc. + gdgts_modern_sub$fIIa. + gdgts_modern_sub$fIIb. +
+      gdgts_modern_sub$fIIc.
+  ) / (
+    gdgts_modern_sub$fIIIa + gdgts_modern_sub$fIIa + gdgts_modern_sub$fIIIa. +
+      gdgts_modern_sub$fIIIb. + gdgts_modern_sub$fIIIc. +
+      gdgts_modern_sub$fIIa. + gdgts_modern_sub$fIIb. + gdgts_modern_sub$fIIc.
+  )
+gdgts_modern_sub$fIIIa..iso <-
+  gdgts_modern_sub$IIIa.. / (gdgts_modern_sub$IIIa.. + gdgts_modern_sub$IIIa. +
+                               gdgts_modern_sub$IIIa)
+
+FA_names <-
+  c(
+    "fIIIa",
+    "fIIIa.",
+    "fIIIa..",
+    "fIIIb",
+    "fIIIb.",
+    "fIIIc",
+    "fIIIc.",
+    "fIIa",
+    "fIIa.",
+    "fIIb",
+    "fIIb.",
+    "fIIc",
+    "fIIc.",
+    "fIa",
+    "fIb",
+    "fIc"
+  )
+modern_fractions_mean <-
+  gdgts_modern_sub %>% group_by(Sample_type) %>% summarise_at(vars(all_of(FA_names)), list(Mean = mean))
+modern_fractions_sd <-
+  gdgts_modern_sub %>% group_by(Sample_type) %>% summarise_at(vars(all_of(FA_names)), list(sd = sd))
+
+colnames(modern_fractions_mean)[-1] <- all_of(FA_names)
+colnames(modern_fractions_sd)[-1] <- all_of(FA_names)
+
+modern_fractions_mean_piv <-
+  tidyr::pivot_longer(
+    modern_fractions_mean,
+    cols = all_of(FA_names),
+    names_to = "FA",
+    values_to = "mean"
+  )
+modern_fractions_sd_piv <-
+  tidyr::pivot_longer(
+    modern_fractions_sd,
+    cols = all_of(FA_names),
+    names_to = "FA",
+    values_to = "sd"
+  )
+modern_fractions_sum_piv <-
+  cbind(modern_fractions_mean_piv, sd = modern_fractions_sd_piv$sd)
+
+ggplot(modern_fractions_sum_piv, aes(x = FA, y = mean, fill = Sample_type)) +
+  geom_bar(position = position_dodge(),
+           stat = "identity",
+           colour = 'black') + theme_bw() +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd),
+                width = .2,
+                position = position_dodge(1))
+```
+
+## Calculating some other indices on ELSA stack samples (sediment cores)
+
+```{r GDGT indices}
+#calculating some indices on full stack
+gdgts_stack$sum_IIIa_div_IIa <-
+  (gdgts_stack$fIIIa + gdgts_stack$fIIIa. + gdgts_stack$fIIIa..) / (gdgts_stack$fIIa +
+                                                                      gdgts_stack$fIIa.)
+gdgts_stack$fIIIa..iso <-
+  gdgts_stack$IIIa.. / (gdgts_stack$IIIa.. + gdgts_stack$IIIa + gdgts_stack$IIIa)
+gdgts_stack$iso_index <-
+  (
+    gdgts_stack$fIIIa.  + gdgts_stack$fIIIb. + gdgts_stack$fIIIc. +
+      gdgts_stack$fIIa. + gdgts_stack$fIIb. + gdgts_stack$fIIc.
+  ) / (
+    gdgts_stack$fIIIa + gdgts_stack$fIIa + gdgts_stack$fIIIb + gdgts_stack$fIIIc + gdgts_stack$fIIb +
+      gdgts_stack$fIIc + gdgts_stack$fIIIa. +
+      gdgts_stack$fIIIb. + gdgts_stack$fIIIc. + gdgts_stack$fIIa. + gdgts_stack$fIIb. +
+      gdgts_stack$fIIc.
+  )
+
+gdgts_stack$BIT <-
+  (
+    gdgts_stack$Ia + gdgts_stack$Ib + gdgts_stack$Ic + gdgts_stack$IIa + gdgts_stack$IIa. +
+      gdgts_stack$IIb + gdgts_stack$IIb. + gdgts_stack$IIc + gdgts_stack$IIc. +
+      gdgts_stack$IIIa + gdgts_stack$IIIa. + gdgts_stack$IIIb + gdgts_stack$IIIb.
+  ) / (
+    gdgts_stack$Ia + gdgts_stack$Ib + gdgts_stack$Ic + gdgts_stack$IIa + gdgts_stack$IIa. +
+      gdgts_stack$IIb + gdgts_stack$IIb. + gdgts_stack$IIc + gdgts_stack$IIc. +
+      gdgts_stack$IIIa + gdgts_stack$IIIa. + gdgts_stack$IIIb + gdgts_stack$IIIb. +
+      gdgts_stack$Cren
+  )
+
+gdgts_stack$MI <-
+  (gdgts_stack$GDGT1 + gdgts_stack$GDGT2 + gdgts_stack$GDGT3) / (
+    gdgts_stack$GDGT1 + gdgts_stack$GDGT2 + gdgts_stack$GDGT3 + gdgts_stack$Cren + gdgts_stack$`Cren'`
+  )
+
+gdgts_stack$soil_index <-
+  (gdgts_stack$Ia + gdgts_stack$Ib + gdgts_stack$Ic + gdgts_stack$IIa) / (gdgts_stack$IIIa +
+                                                                            gdgts_stack$IIIa. + gdgts_stack$IIIb + gdgts_stack$IIIb.)
+
+gdgts_stack$TEX86 <-
+  (gdgts_stack$GDGT2 + gdgts_stack$GDGT3 + gdgts_stack$`Cren'`) / (gdgts_stack$GDGT1 +
+                                                                     gdgts_stack$GDGT2 + gdgts_stack$GDGT3 + gdgts_stack$`Cren'`)
+gdgts_stack$LST_powers2010 <- 55.231 * gdgts_stack$TEX86 - 13.955
+gdgts_stack$GDGT0 <- as.numeric(gdgts_stack$GDGT0)
+gdgts_stack$GDGT0_index <-
+  gdgts_stack$GDGT0 / (gdgts_stack$GDGT0 + gdgts_stack$Cren)
+gdgts_stack[gdgts_stack$BIT > 0.6 |
+              gdgts_stack$GDGT0_index > 0.5,]$LST_powers2010 <- NA
+```
+
+## Which GDGT FAs correlate with Corg/TChl?
+
+```{r GDGTs vs Corg}
+ma <- function(x, n = 5) {
+  stats::filter(x, rep(1 / n, n), sides = 2)
+}
+Corg_50yr <-
+  as.data.frame(cbind(
+    Age_b2k = ELSA_20_Corg$Age_b2k,
+    Corg = ma(ELSA_20_Corg$Corg, n = 50)
+  ))
+Corg_interp <-
+  as.data.frame(approx(
+    Corg_50yr$Age_b2k,
+    Corg_50yr$Corg,
+    xout = as.numeric(gdgts_stack$Age_b2k)
+  ))
+
+FA_Corg_cor_15to60 <-
+  cor((filter(gdgts_stack, Age_b2k > 15000) %>% select(all_of(FA_names))) , Corg_interp[Corg_interp$x >
+                                                                                          15000, 2], method = "spearman")
+barplot(
+  height = FA_Corg_cor_15to60[, 1],
+  names.arg = rownames(FA_Corg_cor_15to60),
+  main = "15-60kyr"
+)
+
+FA_Corg_cor <-
+  cor((filter(gdgts_stack, Age_b2k > 0) %>% select(
+    c(all_of(FA_names), "sum_IIIa_div_IIa", "fIIIa..iso")
+  )) , Corg_interp[Corg_interp$x > 0, 2], method = "spearman")
+barplot(height = FA_Corg_cor[, 1],
+        names.arg = rownames(FA_Corg_cor),
+        main = "0-60kyr")
+```
+
+## Plotting temperature offsets
+
+```{r calibration offsets, echo=FALSE}
+temp_offsets$Sample_type <- gdgts_modern_sub$Sample_type
+temp_offsets$Site_ID <- gdgts_modern_sub$Site_ID
+temp_offsets$Sample_ID <- gdgts_modern_sub$Sample_ID
+temp_offsets$fIIIa..iso <- gdgts_modern_sub$fIIIa..iso
+temp_offsets$sum_IIIa_div_IIa <- gdgts_modern_sub$sum_IIIa_div_IIa
+temp_offsets$iso_index <- gdgts_modern_sub$iso_index
+temp_offsets$BIT <- gdgts_modern_sub$BIT
+temp_offsets$TEX86 <- gdgts_modern_sub$TEX86
+temp_offsets$GDGT0_index <- gdgts_modern_sub$GDGT0_index
+
+temp_offsets_piv <-
+  tidyr::pivot_longer(
+    temp_offsets,
+    cols = c(
+      MBT5Me_soil_MAAT_DeJonge14,
+      Index1_soil_MAAT_DeJonge14,
+      BAYMBT_soil_TMAF_CramptonFlood20,
+      paleoFROG0_soil_TMAF,
+      Index1_lake_MAAT_Russell18,
+      SFS_lake_MAAT_Russell18,
+      BAYMBT_lake_TMAF_MartínezSosa21,
+      TMAF_lake_Raberg21
+    ),
+    names_to = "Temp_calibration"
+  )
+
+p23 <-
+  ggplot(data = temp_offsets_piv,
+         aes(
+           x = forcats::as_factor(Temp_calibration),
+           y = value,
+           shape = Sample_type,
+           fill = fIIIa..
+         )) +
+  geom_jitter(size = 2, width = 0.3) +
+  scale_shape_manual(values = c(21:24)) +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() +
+  ggtitle("Different brGDGT Temperature Calibrations") +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  ylim(-11, 11) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = -45, hjust = 0))
+p23
+```
+
+## Plotting temperature offsets vs fIIIa''
+
+```{r offsets plot2, echo=FALSE}
+# IIIa''_iso vs offset
+ggplot(temp_offsets_piv, aes(x = fIIIa..iso, y = value)) +
+  geom_point(aes(shape = Sample_type), size = 2) +
+  geom_smooth(
+    method = lm,
+    se = FALSE,
+    col = 'red',
+    linewidth = 0.8
+  ) +
+  facet_wrap(~ Temp_calibration) +
+  theme_bw() +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  xlab("fIIIa''_iso") +
+  stat_poly_eq() +
+  scale_shape_manual(values = c(21:24))
+
+# fIIIa'' vs offset
+ggplot(temp_offsets_piv, aes(x = fIIIa.., y = value)) +
+  geom_point(aes(shape = Sample_type), size = 2) +
+  geom_smooth(
+    method = lm,
+    se = FALSE,
+    col = 'red',
+    linewidth = 0.8
+  ) +
+  facet_wrap(~ Temp_calibration) +
+  theme_bw() +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  xlab("fIIIa''") +
+  stat_poly_eq() +
+  scale_shape_manual(values = c(21:24))
+
+#### Plot offsets by brGDGT fractional abundances
+temp_offsets_piv2 <-
+  tidyr::pivot_longer(temp_offsets,
+                      cols = colnames(temp_offsets[c(9:28, 32:37)]),
+                      names_to = "brGDGT_fraction")
+#Raberg21 plot of GDGTs versus offsets
+ggplot(temp_offsets_piv2, aes(x = value, y = TMAF_lake_Raberg21)) +
+  geom_point(aes(shape = Sample_type), size = 2) +
+  geom_smooth(
+    method = lm,
+    se = FALSE,
+    col = 'red',
+    linewidth = 0.8
+  ) +
+  facet_wrap(~ brGDGT_fraction, scales = "free_x") +
+  theme_bw() +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  stat_poly_eq() +
+  scale_shape_manual(values = c(21:24))
+
+#BAYMBT plot of GDGTs versus offsets
+ggplot(temp_offsets_piv2,
+       aes(x = value, y = BAYMBT_lake_TMAF_MartínezSosa21)) +
+  geom_point(aes(shape = Sample_type), size = 2) +
+  geom_smooth(
+    method = lm,
+    se = FALSE,
+    col = 'red',
+    linewidth = 0.8
+  ) +
+  facet_wrap(~ brGDGT_fraction, scales = "free_x") +
+  theme_bw() +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  stat_poly_eq() +
+  scale_shape_manual(values = c(21:24))
+
+
+### only BAYMBT and Raberg and seperating out lakes from soils
+# fIIIa'' vs offset
+temp_offsets_piv3 <-
+  tidyr::pivot_longer(
+    temp_offsets,
+    cols = c(BAYMBT_lake_TMAF_MartínezSosa21, TMAF_lake_Raberg21),
+    names_to = "Temp_calibration"
+  )
+colnames(temp_offsets_piv3)[colnames(temp_offsets_piv3) == "value"] <-
+  "offset"
+
+p24 <- ggplot(temp_offsets_piv3, aes(x = fIIIa.., y = offset)) +
+  geom_point(aes(shape = Sample_type, color = Site_ID), size = 2) +
+  geom_smooth(
+    method = lm,
+    se = FALSE,
+    col = 'red',
+    linewidth = 0.8
+  ) +
+  geom_smooth(
+    data = filter(temp_offsets_piv3, Sample_type != "soil"),
+    method = lm,
+    se = FALSE,
+    col = 'blue',
+    linewidth = 0.8
+  ) +
+  facet_wrap(~ Temp_calibration) +
+  theme_bw() +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  xlab("fIIIa''") +
+  stat_poly_eq(
+    aes(label = paste(
+      after_stat(eq.label), after_stat(rr.label), sep = "~~~"
+    )),
+    col = 'red',
+    label.y = 1,
+    label.x = 1.02
+  ) +
+  stat_poly_eq(
+    data = filter(temp_offsets_piv3, Sample_type != "soil"),
+    aes(label = paste(
+      after_stat(eq.label), after_stat(rr.label), sep = "~~~"
+    )),
+    col = 'blue',
+    label.y = 0.9,
+    label.x = 1.02
+  ) +
+  scale_shape_manual(values = c(21:24)) + scale_color_manual(values = c("#EE6677", "#228833", "#CCBB44", "#66CCEE"))
+p24
+
+ggplot(temp_offsets_piv3, aes(x = fIIIa..iso, y = offset)) +
+  geom_point(aes(shape = Sample_type), size = 2) +
+  geom_smooth(
+    method = lm,
+    se = FALSE,
+    col = 'red',
+    linewidth = 0.8
+  ) +
+  geom_smooth(
+    data = filter(temp_offsets_piv3, Sample_type != "soil"),
+    method = lm,
+    se = FALSE,
+    col = 'blue',
+    linewidth = 0.8
+  ) +
+  facet_wrap(~ Temp_calibration) +
+  theme_bw() +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  xlab("fIIIa'' isomer") +
+  stat_poly_eq(
+    aes(label = paste(
+      after_stat(eq.label), after_stat(rr.label), sep = "~~~"
+    )),
+    col = 'red',
+    label.y = 1,
+    label.x = 1.02
+  ) +
+  stat_poly_eq(
+    data = filter(temp_offsets_piv3, Sample_type != "soil"),
+    aes(label = paste(
+      after_stat(eq.label), after_stat(rr.label), sep = "~~~"
+    )),
+    col = 'blue',
+    label.y = 0.9,
+    label.x = 1.02
+  ) +
+  scale_shape_manual(values = c(21:24))
+
+#combined plot of FIIIa'' offsets crossplot and calibration comparison with above plot of offsets
+grid.newpage()
+grid.draw(arrangeGrob(p23, p24, nrow = 2, heights = c(1.5, 1)))
+
+#plot of offsets compared to fIIIa.. and IIIa/IIa
+ggplot() +
+  geom_point(
+    data = temp_offsets_piv3,
+    aes(
+      x = fIIIa..,
+      y = sum_IIIa_div_IIa,
+      shape = Sample_type,
+      fill = offset
+    ),
+    size = 4
+  ) +
+  scale_shape_manual(values = c(21:24)) + geom_hline(yintercept = 1, linetype = "dashed") +
+  scale_fill_viridis_c(option = "A") +
+  theme_bw()
+
+## depth vs IIIa..
+gdgts_modern_sub %>% filter(Site_ID == "SM") %>%
+  ggplot() +
+  geom_point(
+    aes(x = TMAF_lake_Raberg21, y = water_depth_m, fill = fIIIa..),
+    size = 4,
+    shape = 21
+  ) +
+  scale_fill_continuous(type = "viridis") +
+  labs(fill = "fIIIa''") +  xlim(c(6, 11)) +
+  theme_bw() + ggtitle("Schalkenmehrener Maar") + geom_vline(xintercept = 8.77, linetype = "dashed") +
+  scale_y_reverse()
+
+## depth vs IIIa..
+gdgts_modern_sub %>% filter(Sample_type %in% (c("lake_surface_sed", "lake_shore"))) %>%
+  ggplot() +
+  geom_point(
+    aes(
+      x = fIIIa..,
+      y = water_depth_m,
+      fill = TMAF_lake_Raberg21 - CRUTS_TMAF_alt_corr,
+      shape = Site_ID
+    ),
+    size = 4
+  ) +  scale_shape_manual(values = c(21:24)) +
+  scale_fill_viridis_c(option = "B" , limits = c(-3, 2)) +
+  labs(fill = "Temp Offset") +
+  theme_bw() + ggtitle("All lakes") +
+  scale_y_reverse()
+
+# IIIa/IIa vs offset
+p30 <-
+  ggplot(temp_offsets_piv3, aes(x = sum_IIIa_div_IIa, y = offset)) +
+  geom_point(aes(shape = Sample_type, color = Site_ID), size = 2) +
+  geom_smooth(
+    method = lm,
+    se = FALSE,
+    col = 'red',
+    linewidth = 0.8
+  ) +
+  facet_wrap(~ Temp_calibration) +
+  theme_bw() +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  xlab("sum(IIIa)/sum(IIa)") +
+  stat_poly_eq(
+    aes(label = paste(
+      after_stat(eq.label), after_stat(rr.label), sep = "~~~"
+    )),
+    col = 'red',
+    label.y = 1,
+    label.x = 1.02
+  ) +
+  scale_shape_manual(values = c(21:24)) + scale_color_manual(values = c("#EE6677", "#228833", "#CCBB44", "#66CCEE")) + geom_vline(xintercept = 1, linetype = "dashed")
+p30
+
+
+#combined plot of temp offsets correction models
+grid.newpage()
+grid.draw(arrangeGrob(p30, p24, nrow = 2))
+```
+
+## Plot SM depth transect
+
+```{r depth transect, echo = FALSE, warning=FALSE}
+SM_transect <-
+  gdgts_modern_sub %>% filter(Site_ID == "SM") %>% select(
+    Sample_type,
+    water_depth_m,
+    BAYMBT_lake_TMAF_MartínezSosa21,
+    TMAF_lake_Raberg21,
+    GDGT0_index,
+    Cren,
+    fIIIa..,
+    sum_IIIa_div_IIa
+  )
+SM_transect$Cren <-
+  SM_transect$Cren / rowSums(gdgts_modern_sub[gdgts_modern_sub$Site_ID == "SM", 15:20])
+
+SM_transect[SM_transect$Sample_type == "soil",]$water_depth_m <-
+  -2.5
+SM_transect[SM_transect$Sample_type == "lake_core",]$water_depth_m <-
+  21
+
+SM_transect_piv <-  tidyr::pivot_longer(SM_transect,
+                                        cols =  colnames(SM_transect)[3:8],
+                                        names_to = "proxy")
+
+SM_transect_piv <-
+  rbind(
+    SM_transect_piv,
+    data.frame(
+      water_depth_m = SM_O2$Depth..m.,
+      proxy = rep("O2", nrow(SM_O2)),
+      value = SM_O2$Oxygen.ppm,
+      Sample_type = "water"
+    ),
+    data.frame(
+      water_depth_m = SM_temp$Depth_m,
+      proxy = rep("Water Temp °C", nrow(SM_temp)),
+      value = SM_temp$Temp_C,
+      Sample_type = "water"
+    )
+  )
+
+SM_transect_piv$panel = NA
+SM_transect_piv[SM_transect_piv$proxy %in% c("Water Temp °C", "O2"),]$panel <-
+  1
+SM_transect_piv[SM_transect_piv$proxy == "GDGT0_index",]$panel <- 2
+SM_transect_piv[SM_transect_piv$proxy == "Cren",]$panel <- 3
+SM_transect_piv[SM_transect_piv$proxy == "fIIIa..",]$panel <- 4
+SM_transect_piv[SM_transect_piv$proxy == "sum_IIIa_div_IIa",]$panel <-
+  5
+SM_transect_piv[SM_transect_piv$proxy %in% c("BAYMBT_lake_TMAF_MartínezSosa21", "TMAF_lake_Raberg21"),]$panel <-
+  6
+
+SM_transect_piv <- SM_transect_piv %>%  arrange(water_depth_m)
+
+p33 <- ggplot(SM_transect_piv,
+              aes(y = value,
+                  x = water_depth_m,
+                  color = proxy,)) +
+  geom_point(data = subset(SM_transect_piv, panel != 1), aes(shape = Sample_type)) +
+  geom_path(data = subset(SM_transect_piv, panel == 1)) +
+  geom_smooth(
+    data = subset(SM_transect_piv, water_depth_m >= 0 &
+                    panel != 1),
+    method = "loess",
+    se = FALSE,
+    span = 0.35
+  ) +
+  theme_bw() + scale_shape_manual(values = c(21:24, 0)) +
+  scale_x_reverse() +
+  coord_flip() +
+  facet_wrap(~ panel, nrow = 1, scales = "free_x") + scale_color_manual(
+    values = c(
+      "#CC3311",
+      "black",
+      "#AA4499",
+      "#BBBBBB",
+      "#33BBEE",
+      "#009988",
+      "#0077BB",
+      "#EE3377"
+    )
+  )
+
+p33
+```
+
+## Corrections to calibration models using fIIIa''
+
+```{r modern corrections}
+corr_model_Raberg21 <-
+  lm(formula = TMAF_lake_Raberg21 ~ fIIIa..,
+     data = filter(temp_offsets, Sample_type != "soil"))
+summary(corr_model_Raberg21)
+corr_model_BAYMBT_MartínezSosa21 <-
+  lm(formula = BAYMBT_lake_TMAF_MartínezSosa21 ~ fIIIa..,
+     data = filter(temp_offsets, Sample_type != "soil"))
+summary(corr_model_BAYMBT_MartínezSosa21)
+
+#### Function to correct temperatures based on linear model of fIIIa'' and modern temp offsets
+temp_correction <- function(temp_calibration, temp_recon) {
+  newdata <- select(temp_recon, paste(temp_calibration), fIIIa..)
+  f <- as.formula(paste(temp_calibration, "fIIIa..", sep = "~"))
+  
+  corr_model <-
+    lm(formula = f,
+       data = filter(temp_offsets, Sample_type != "soil"))
+  predicted_offset <- predict(corr_model, newdata = newdata)
+  corrected_temps <- newdata[, 1] - predicted_offset
+  return(corrected_temps)
+}
+
+# apply function to modern GDGT temperature estimates
+gdgts_modern_temp_corrected <- gdgts_modern_temp_estimates
+for (i in 1:ncol(gdgts_modern_temp_estimates)) {
+  gdgts_modern_temp_corrected[, i] <-
+    temp_correction(
+      temp_calibration = colnames(gdgts_modern_temp_estimates[i]),
+      temp_recon = gdgts_modern_sub
+    )
+}
+
+colnames(gdgts_modern_temp_corrected) <-
+  paste(colnames(gdgts_modern_temp_corrected), "_strat", sep = "")
+
+#calculate offsets between modern temp and corrected data
+corr_temp_offsets <-
+  cbind(
+    select(gdgts_modern_temp_corrected, contains("MAAT")) - gdgts_modern$CRUTS_MAAT_alt_corr,
+    select(gdgts_modern_temp_corrected, contains("TMAF")) - gdgts_modern$CRUTS_TMAF_alt_corr,
+    temp_offsets$Sample_type,
+    temp_offsets$Sample_ID,
+    temp_offsets$fIIIa..,
+    temp_offsets$fIIIa..iso
+  )
+
+#plot corrected offsets like above
+corr_temp_offsets_piv <-
+  tidyr::pivot_longer(
+    corr_temp_offsets,
+    cols = c(
+      MBT5Me_soil_MAAT_DeJonge14_strat,
+      Index1_soil_MAAT_DeJonge14_strat,
+      BAYMBT_soil_TMAF_CramptonFlood20_strat,
+      paleoFROG0_soil_TMAF_strat,
+      Index1_lake_MAAT_Russell18_strat,
+      SFS_lake_MAAT_Russell18_strat,
+      BAYMBT_lake_TMAF_MartínezSosa21_strat,
+      TMAF_lake_Raberg21_strat
+    ),
+    names_to = "Temp_calibration"
+  )
+
+colnames(corr_temp_offsets_piv)[c(1:4)] <-
+  c("Sample_type", "Sample_ID", "fIIIa..", "fIIIa..iso")
+
+ggplot(
+  corr_temp_offsets_piv,
+  aes(
+    x = forcats::as_factor(Temp_calibration),
+    y = value,
+    shape = Sample_type,
+    fill = fIIIa..
+  )
+) +
+  geom_jitter(size = 2, width = 0.3) +
+  scale_shape_manual(values = c(21:24)) +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() +
+  ggtitle("Corrected brGDGT Temperature Calibrations") +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  ylim(-11, 11) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = -45, hjust = 0))
+
+
+##### plot that combines corrected and uncorrected model offsets
+temp_offsets_combo <-
+  cbind(temp_offsets, corr_temp_offsets[, c(5, 6, 9, 10)], gdgts_modern_sub$MBT5Me)
+colnames(temp_offsets_combo)[42] <- "MBT5Me"
+
+#pivot
+temp_offsets_combo_piv <-   tidyr::pivot_longer(
+  temp_offsets_combo,
+  cols = c(
+    MBT5Me_soil_MAAT_DeJonge14,
+    Index1_soil_MAAT_DeJonge14,
+    BAYMBT_soil_TMAF_CramptonFlood20,
+    paleoFROG0_soil_TMAF,
+    Index1_lake_MAAT_Russell18,
+    SFS_lake_MAAT_Russell18,
+    BAYMBT_lake_TMAF_MartínezSosa21,
+    TMAF_lake_Raberg21,
+    BAYMBT_lake_TMAF_MartínezSosa21_strat,
+    TMAF_lake_Raberg21_strat,
+  ),
+  names_to = "Temp_calibration"
+)
+
+ggplot(
+  temp_offsets_combo_piv,
+  aes(
+    x = forcats::as_factor(Temp_calibration),
+    y = value,
+    shape = Sample_type,
+    fill = fIIIa..
+  )
+) +
+  geom_jitter(size = 2, width = 0.3) +
+  scale_shape_manual(values = c(21:24)) +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() +
+  ggtitle("brGDGT Temperature Calibrations") +
+  ylab("Offset from 1901-2016 Temperature (°C)") +
+  ylim(-11, 11) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = -45, hjust = 0))
+```
+
+## Calculate indices and Temperatures on ELSA stack samples
+
+```{r ELSA stack calibrations}
+#lake calibrations
+gdgts_stack$MBT5Me <-
+  (gdgts_stack$fIa + gdgts_stack$fIb + gdgts_stack$fIc) / (
+    gdgts_stack$fIa + gdgts_stack$fIb + gdgts_stack$fIc + gdgts_stack$fIIa +
+      gdgts_stack$fIIb + gdgts_stack$fIIc + gdgts_stack$fIIIa
+  )
+# calculate BAYMBT output
+stack_bayMBT_lake_ens <-
+  bayrmbt_predict(
+    gdgts_stack$MBT5Me,
+    prior_mean = 9.5,
+    prior_std = 10,
+    Tmodel = "T0",
+    Type = "lake"
+  )
+gdgts_stack$BAYMBT_lake_TMAF_MartínezSosa21 <-
+  stack_bayMBT_lake_ens[["T"]][, 2]
+#Russell 2018 equations
+gdgts_stack$Index1 <-
+  log10((
+    gdgts_stack$fIa + gdgts_stack$fIb + gdgts_stack$fIc + gdgts_stack$fIIa. + gdgts_stack$fIIIa.
+  ) / (
+    gdgts_stack$fIc + gdgts_stack$fIIa + gdgts_stack$fIIc + gdgts_stack$fIIIa +
+      gdgts_stack$fIIIa.
+  )
+  )
+gdgts_stack$Index1_lake_MAAT_Russell18 <-
+  gdgts_stack$Index1 * 18.79 + 12.22
+gdgts_stack$SFS_lake_MAAT_Russell18 <-
+  23.81 - 31.02 * gdgts_stack$fIIIa - 41.91 * gdgts_stack$fIIb - 51.59 *
+  gdgts_stack$fIIb. - 24.70 * gdgts_stack$fIIa + 68.80 * gdgts_stack$fIb
+#Raberg 2021 equation
+gdgts_stack$fIb_meth <-
+  gdgts_stack$Ib / (gdgts_stack$Ib + gdgts_stack$IIb + gdgts_stack$IIIb)
+gdgts_stack$fIIa_meth <-
+  gdgts_stack$IIa / (gdgts_stack$Ia + gdgts_stack$IIa + gdgts_stack$IIIa)
+gdgts_stack$fIIb_meth <-
+  gdgts_stack$IIb / (gdgts_stack$Ib + gdgts_stack$IIb + gdgts_stack$IIIb)
+gdgts_stack$fIIc_meth <-
+  gdgts_stack$IIc / (gdgts_stack$Ic + gdgts_stack$IIc + gdgts_stack$IIIc)
+gdgts_stack$fIIIa_meth <-
+  gdgts_stack$IIIa / (gdgts_stack$Ia + gdgts_stack$IIa + gdgts_stack$IIIa)
+gdgts_stack$fIIIb_meth <-
+  gdgts_stack$IIIb / (gdgts_stack$Ib + gdgts_stack$IIb + gdgts_stack$IIIb)
+gdgts_stack$TMAF_lake_Raberg21 <-
+  92.9 + 63.84 * gdgts_stack$fIb_meth ^
+  2 -
+  130.51 * gdgts_stack$fIb_meth -
+  28.77 * gdgts_stack$fIIa_meth ^ 2 -
+  72.28 * gdgts_stack$fIIb_meth ^ 2 -
+  5.88 * gdgts_stack$fIIc_meth ^ 2 +
+  20.89 * gdgts_stack$fIIIa_meth ^ 2 -
+  40.54 * gdgts_stack$fIIIa_meth -
+  80.47 * gdgts_stack$fIIIb_meth
+
+#soil calibrations
+gdgts_stack$MBT5Me_soil_MAAT_DeJonge14 <-
+  -8.57 + 31.45 * gdgts_stack$MBT5Me
+gdgts_stack$Index1_soil_MAAT_DeJonge14 <-
+  5.05 + 14.86 * gdgts_stack$Index1
+
+stack_bayMBT_soil_ens <-
+  bayrmbt_predict(
+    gdgts_stack$MBT5Me,
+    prior_mean = 9.5,
+    prior_std = 10,
+    Tmodel = "T0",
+    Type = "soil"
+  )
+gdgts_stack$BAYMBT_soil_TMAF_CramptonFlood20 <-
+  stack_bayMBT_soil_ens[["T"]][, 2]
+
+# Note, ran Paleofrog through shiny app, must input data in separate file. paleofrog recalculates fractions for the set it uses
+# paleoFROG::run_app()
+paleoFROG_results_stack <-
+  read.csv("paleofrog_ELSA_stack_model_results.csv")
+
+# #slump reomved version
+paleoFROG_results_stack <-
+  filter(paleoFROG_results_stack,!(ID %in% c(
+    350, 748, 749, 750, 800, 833, 940, 942, 945, 955
+  )))
+gdgts_stack$paleoFROG0_soil_TMAF <- paleoFROG_results_stack$FROG0
+gdgts_stack$paleoFROG_soil_MAAT <- paleoFROG_results_stack$FROG
+
+
+#altitude correction
+SMF_alt <- gdgts_stack %>%
+  filter(Core_ID %in% c("SMF2", "SMF1")) %>%
+  mutate_at(
+    vars(
+      MBT5Me_soil_MAAT_DeJonge14,
+      Index1_soil_MAAT_DeJonge14,
+      BAYMBT_soil_TMAF_CramptonFlood20,
+      paleoFROG0_soil_TMAF,
+      Index1_lake_MAAT_Russell18,
+      SFS_lake_MAAT_Russell18,
+      BAYMBT_lake_TMAF_MartínezSosa21,
+      TMAF_lake_Raberg21,
+      paleoFROG_soil_MAAT
+    ),
+    ~ . + ((456 - 456) * 0.0066)
+  )
+
+HM_alt <- gdgts_stack %>%
+  filter(Core_ID %in% c("HM3", "HM4")) %>%
+  mutate_at(
+    vars(
+      MBT5Me_soil_MAAT_DeJonge14,
+      Index1_soil_MAAT_DeJonge14,
+      BAYMBT_soil_TMAF_CramptonFlood20,
+      paleoFROG0_soil_TMAF,
+      Index1_lake_MAAT_Russell18,
+      SFS_lake_MAAT_Russell18,
+      BAYMBT_lake_TMAF_MartínezSosa21,
+      TMAF_lake_Raberg21,
+      paleoFROG_soil_MAAT
+    ),
+    ~ . + ((425 - 456) * 0.0066)
+  )
+
+gdgts_stack <-
+  rbind(SMF_alt, HM_alt, filter(gdgts_stack, Core_ID %in% c("AU3", "AU4")))
+```
+
+## Plotting temperatures (without correction)
+
+```{r temp comparison1, echo=FALSE}
+temp_stack_piv <-
+  gdgts_stack %>% select(
+    Sample_ID,
+    Core_ID,
+    Age_b2k,
+    fIIIa..,
+    fIIIa..iso,
+    MBT5Me_soil_MAAT_DeJonge14,
+    Index1_soil_MAAT_DeJonge14,
+    BAYMBT_soil_TMAF_CramptonFlood20,
+    paleoFROG0_soil_TMAF,
+    Index1_lake_MAAT_Russell18,
+    SFS_lake_MAAT_Russell18,
+    BAYMBT_lake_TMAF_MartínezSosa21,
+    TMAF_lake_Raberg21
+  ) %>% tidyr::pivot_longer(
+    cols = c(
+      MBT5Me_soil_MAAT_DeJonge14,
+      Index1_soil_MAAT_DeJonge14,
+      BAYMBT_soil_TMAF_CramptonFlood20,
+      paleoFROG0_soil_TMAF,
+      Index1_lake_MAAT_Russell18,
+      SFS_lake_MAAT_Russell18,
+      BAYMBT_lake_TMAF_MartínezSosa21,
+      TMAF_lake_Raberg21
+    ),
+    names_to = "Temp_calibration"
+  )
+
+temp_stack_piv$calib_type <- "MAAT"
+temp_stack_piv[grepl("TMAF", temp_stack_piv$Temp_calibration),]$calib_type <-
+  "TMAF"
+
+ggplot(
+  temp_stack_piv,
+  aes(
+    x = Age_b2k,
+    y = value,
+    color = Temp_calibration,
+    linetype = calib_type
+  )
+) +
+  geom_line(aes(alpha = 0.8)) + theme_bw() + ylab("Temp (°C)") +
+  xlim(0, 60000) +
+  labs(color  = "Calibration Model", linetype = "Calibration Model") +
+  ggtitle("Comparison of calibration models")
+```
+
+## Corrections to reconstructions using fIIIa''
+
+```{r stack corrections, echo=FALSE}
+# apply function to ELSA Stack GDGT temperature reconstructions
+gdgts_stack_corrected <-
+  select(
+    gdgts_stack,
+    MBT5Me_soil_MAAT_DeJonge14,
+    Index1_soil_MAAT_DeJonge14,
+    BAYMBT_soil_TMAF_CramptonFlood20,
+    paleoFROG0_soil_TMAF,
+    Index1_lake_MAAT_Russell18,
+    SFS_lake_MAAT_Russell18,
+    BAYMBT_lake_TMAF_MartínezSosa21,
+    TMAF_lake_Raberg21
+  )
+
+for (i in 1:ncol(gdgts_stack_corrected)) {
+  gdgts_stack_corrected[, i] <-
+    temp_correction(temp_calibration = colnames(gdgts_stack_corrected[i]),
+                    temp_recon = gdgts_stack)
+}
+
+### Seperate out overlapping samples
+gdgts_stack_corrected <-
+  cbind(
+    select(
+      gdgts_stack,
+      Sample_ID,
+      Age_b2k,
+      Core_ID,
+      fIIIa..,
+      fIIIa..iso,
+      Sample_ID
+    ),
+    gdgts_stack_corrected
+  )
+overlap_IDs <- c(129, 130, 132)
+gdgts_stack_corrected_overlap <-
+  gdgts_stack_corrected %>% filter(Sample_ID %in% overlap_IDs)
+gdgts_stack_corrected <-
+  gdgts_stack_corrected %>% filter(!(Sample_ID %in% overlap_IDs))
+gdgts_stack_nonoverlap <-
+  gdgts_stack %>% filter(!(Sample_ID %in% overlap_IDs))
+
+### plot it
+corrected_stack_piv <-
+  gdgts_stack_corrected %>% tidyr::pivot_longer(
+    cols = c(
+      MBT5Me_soil_MAAT_DeJonge14,
+      Index1_soil_MAAT_DeJonge14,
+      BAYMBT_soil_TMAF_CramptonFlood20,
+      paleoFROG0_soil_TMAF,
+      Index1_lake_MAAT_Russell18,
+      SFS_lake_MAAT_Russell18,
+      BAYMBT_lake_TMAF_MartínezSosa21,
+      TMAF_lake_Raberg21,
+    ),
+    names_to = "Temp_calibration"
+  )
+
+corrected_stack_piv$calib_type <- "MAAT"
+corrected_stack_piv[grepl("TMAF", corrected_stack_piv$Temp_calibration),]$calib_type <-
+  "TMAF"
+
+#all models plot
+ggplot(
+  corrected_stack_piv,
+  aes(
+    x = Age_b2k,
+    y = value,
+    color = Temp_calibration,
+    linetype = calib_type
+  )
+) +
+  geom_line(aes(alpha = 0.8)) + theme_bw() + ylab("Temp (°C)") +
+  xlim(0, 60000) +
+  labs(color  = "Calibration Model", linetype = "Calibration Model") +
+  ggtitle("Corrected Temperature Reconstructions")
+
+#Only TMAF models
+corrected_stack_piv_TMAF <-
+  dplyr::filter(corrected_stack_piv, calib_type == "TMAF")
+ggplot(corrected_stack_piv_TMAF,
+       aes(x = Age_b2k, y = value, color = Temp_calibration)) +
+  geom_line(aes(alpha = 0.8)) + theme_bw() + ylab("Temp (°C)") +
+  xlim(0, 60000) +
+  labs(color  = "Calibration Model", linetype = "Calibration Model") +
+  ggtitle("Corrected Temperature Reconstructions (TMAF models)")
+
+#test plot of overlap between HM and AU during late glacial
+corrected_stack_piv_raberg <-
+  filter(corrected_stack_piv, Temp_calibration == "TMAF_lake_Raberg21")
+ggplot(corrected_stack_piv_raberg, aes(x = Age_b2k, y = value)) +
+  geom_line() + theme_bw() + ylab("Temp (°C)") +
+  xlim(16000, 9000) +
+  labs(color  = "Calibration Model", linetype = "Calibration Model") +
+  ggtitle("Strat-Corrected Temperature Reconstructions (Raberg 21)") +
+  geom_point(aes(shape = Core_ID), fill = "black", size = 4) + scale_shape_manual(values = c(24, 24, 22, 22, 21, 21)) +
+  geom_point(
+    data = gdgts_stack_corrected_overlap,
+    aes(x = Age_b2k, y = TMAF_lake_Raberg21, shape = Core_ID),
+    size = 4
+  ) + scale_shape_manual(values = c(24, 24, 22, 22, 21, 21)) +
+  geom_line(data = NGRIP,
+            aes(
+              x = Age_b2k,
+              y = d18O_permil + 45,
+              alpha = 0.8,
+              color = "red"
+            ))
+
+#test plot of overlap between HM and AU during late glacial
+corrected_stack_piv_raberg <-
+  filter(corrected_stack_piv, Temp_calibration == "TMAF_lake_Raberg21")
+ggplot(corrected_stack_piv_raberg, aes(x = Age_b2k, y = value)) +
+  geom_line() + theme_bw() + ylab("Temp (°C)") +
+  xlim(16000, 9000) +
+  labs(color  = "Calibration Model", linetype = "Calibration Model") +
+  ggtitle("Soil and Strat Corrected Temperature Reconstructions (Raberg 21)") +
+  geom_point(aes(shape = Core_ID), fill = "black", size = 4) + scale_shape_manual(values = c(24, 24, 22, 22, 21, 21)) +
+  geom_point(
+    data = gdgts_stack_corrected_overlap,
+    aes(x = Age_b2k, y = TMAF_lake_Raberg21, shape = Core_ID),
+    size = 4
+  ) + scale_shape_manual(values = c(24, 24, 22, 22, 21, 21)) +
+  geom_line(data = NGRIP,
+            aes(
+              x = Age_b2k,
+              y = d18O_permil + 45,
+              alpha = 0.8,
+              color = "red"
+            ))
+```
+## PCA plotting
+
+```{r PCA}
+#wrangling data for PCA on full set, and Branched GDGTs
+data_for_PCA <-
+  rbind(select(
+    gdgts_modern_sub,
+    c(
+      "GDGT0",
+      "GDGT1",
+      "GDGT2",
+      "GDGT3",
+      "Cren",
+      "Cren'",
+      "IIIa",
+      "IIIa.",
+      "IIIa..",
+      "IIIb",
+      "IIIb.",
+      "IIIc",
+      "IIIc.",
+      "IIa",
+      "IIa.",
+      "IIb",
+      "IIb.",
+      "IIc",
+      "IIc.",
+      "Ia",
+      "Ib",
+      "Ic"
+    )
+  ), select(
+    gdgts_stack,
+    c(
+      "GDGT0",
+      "GDGT1",
+      "GDGT2",
+      "GDGT3",
+      "Cren",
+      "Cren'",
+      "IIIa",
+      "IIIa.",
+      "IIIa..",
+      "IIIb",
+      "IIIb.",
+      "IIIc" ,
+      "IIIc.",
+      "IIa",
+      "IIa.",
+      "IIb",
+      "IIb.",
+      "IIc",
+      "IIc.",
+      "Ia",
+      "Ib",
+      "Ic"
+    )
+  ))
+
+brGDGTs_data <-
+  select(
+    data_for_PCA,
+    c(
+      "IIIa",
+      "IIIa.",
+      "IIIa..",
+      "IIIb",
+      "IIIb.",
+      "IIIc" ,
+      "IIIc.",
+      "IIa",
+      "IIa.",
+      "IIb",
+      "IIb.",
+      "IIc",
+      "IIc.",
+      "Ia",
+      "Ib",
+      "Ic"
+    )
+  )
+
+data_for_PCA <- data_for_PCA / rowSums(data_for_PCA)
+sample_type_full <-
+  c(gdgts_modern_sub$Sample_type, rep("lake_core", each = nrow(gdgts_stack)))
+#adding site ids to core samples
+sample_type_full_alt <- sample_type_full
+for (i in 1:length(sample_type_full)) {
+  if (sample_type_full[i] == "lake_core")
+  {
+    if (i < 49)
+    {
+      sample_type_full_alt[i] <-
+        paste("core-", gdgts_modern_sub$Site_ID[i], sep = "")
+    }
+    else {
+      sample_type_full_alt[i] <-
+        paste("core-", gdgts_stack$Core_ID[i - 48], sep = "")
+    }
+  }
+}
+sample_type_full_alt <- gsub('[0-9]+', '', sample_type_full_alt)
+sample_type_full_alt[sample_type_full_alt == "core-SMF"] <-
+  "core-SM"
+
+#alternate grouping
+sample_type_full_alt2 <- sample_type_full_alt
+sample_type_full_alt2[sample_type_full_alt == "core-AU"] <- "AU"
+sample_type_full_alt2[sample_type_full_alt == "core-GM"] <- "GM"
+sample_type_full_alt2[sample_type_full_alt == "core-SM"] <- "SM"
+sample_type_full_alt2[which(gdgts_modern_sub$Site_ID == "SM" &
+                              gdgts_modern_sub$Sample_type != "lake_shore")[1:nrow(gdgts_modern_sub)]] <-
+  "SM"
+sample_type_full_alt2[sample_type_full_alt == "core-HM"] <-
+  "HM (>1000 yr b2k)"
+sample_type_full_alt2[which(gdgts_modern_sub$Site_ID == "HM" &
+                              gdgts_modern_sub$Sample_type != "lake_shore")[1:nrow(gdgts_modern_sub)]] <-
+  "HM (<100 yr b2k)"
+sample_type_full_alt2[sample_type_full_alt == "lake_shore"] <-
+  "Lake shore (SM)"
+sample_type_full_alt2[sample_type_full_alt == "soil"] <- "Soil"
+
+sample_type_full_alt2 <-
+  factor(
+    sample_type_full_alt2,
+    levels = c(
+      "Soil",
+      "Lake shore (SM)",
+      "GM",
+      "SM",
+      "HM (<100 yr b2k)",
+      "HM (>1000 yr b2k)",
+      "AU"
+    )
+  )
+
+
+Full_pca <- prcomp(clr(data_for_PCA), scale = TRUE)
+summary(Full_pca)
+
+#Plot full data PCA
+plot_PCA1 <-
+  fviz_pca_biplot(
+    X = Full_pca,
+    repel = TRUE,
+    label = "var",
+    habillage = as.factor(sample_type_full_alt2),
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )   +  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_shape_manual(values = c(0, 2, 1, 1, 1, 1, 1)) + khroma::scale_color_bright()
+
+plot_PCA1.3 <-
+  fviz_pca_biplot(
+    X = Full_pca,
+    repel = TRUE,
+    label = "var",
+    axes = c(3, 2),
+    habillage = as.factor(sample_type_full_alt2),
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )   +  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_shape_manual(values = c(0, 2, 1, 1, 1, 1, 1)) + khroma::scale_color_bright()
+plot_PCA1.3
+
+#Plot with temp_recon as shading
+TMAF_temp <-
+  rbind(
+    select(gdgts_stack_corrected, Sample_ID, TMAF_lake_Raberg21),
+    select(gdgts_stack_corrected_overlap, Sample_ID, TMAF_lake_Raberg21)
+  )
+TMAF_temp$Sample_ID <- as.numeric(TMAF_temp$Sample_ID)
+TMAF_temp <- TMAF_temp[order(TMAF_temp$Sample_ID), ]
+temp_raberg_strat_full <-
+  c(
+    gdgts_modern_temp_corrected$TMAF_lake_Raberg21_strat,
+    TMAF_temp$TMAF_lake_Raberg21
+  )
+
+plot_PCA1.2 <-
+  fviz_pca_biplot(
+    X = Full_pca,
+    repel = TRUE,
+    label = "var",
+    col.ind = temp_raberg_strat_full,
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )  + scale_shape_manual(values = c(21, 22, 23, 24)) +  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_color_viridis_c(option = "A") + labs(color = "TMAF °C")
+plot_PCA1.2
+
+#plot branched only PCA
+brGDGTs_data <- brGDGTs_data / rowSums(brGDGTs_data)
+brGDGTs_pca <- prcomp(clr(brGDGTs_data), scale = TRUE)
+print("brGDGTs PCA summary")
+summary(brGDGTs_pca)
+
+#PCs 1 and 2
+plot_PCA2 <-
+  fviz_pca_biplot(
+    X = brGDGTs_pca,
+    repel = TRUE,
+    label = "var",
+    habillage = as.factor(sample_type_full_alt2),
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )  +    theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_shape_manual(values = c(0, 2, 1, 1, 1, 1, 1)) + khroma::scale_color_bright()
+plot_PCA2
+
+#PCs 2 and 3
+plot_PCA3 <-
+  fviz_pca_biplot(
+    X = brGDGTs_pca,
+    axes = c(3, 2),
+    repel = TRUE,
+    label = "var",
+    habillage = as.factor(sample_type_full_alt2),
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )  +    theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_shape_manual(values = c(0, 2, 1, 1, 1, 1, 1)) + khroma::scale_color_bright()
+plot_PCA3
+
+plot_PCA3b <-
+  fviz_pca_biplot(
+    X = brGDGTs_pca,
+    axes = c(3, 2),
+    repel = TRUE,
+    label = "var",
+    col.ind = temp_raberg_strat_full,
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )   + scale_shape_manual(values = c(21, 22, 23, 24)) +  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_color_viridis_c(option = "A") + labs(color = "TMAF °C")
+plot_PCA3b
+
+plot_PCA4 <-
+  fviz_pca_biplot(
+    X = brGDGTs_pca,
+    repel = TRUE,
+    label = "var",
+    col.ind = temp_raberg_strat_full,
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )   + scale_shape_manual(values = c(21, 22, 23, 24)) +  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_color_viridis_c(option = "A") + labs(color = "TMAF °C")
+plot_PCA4
+
+#Plot with age as shading
+ages_full <-
+  c(rep(0, each = nrow(gdgts_modern_sub)), gdgts_stack$Age_b2k)
+plot_PCA5 <-
+  fviz_pca_biplot(
+    X = brGDGTs_pca,
+    repel = TRUE,
+    label = "var",
+    col.ind = ages_full,
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )   + scale_shape_manual(values = c(21, 22, 23, 24)) +  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_color_continuous(type = "viridis") + labs(color = "Age_b2k")
+plot_PCA5
+
+#plot with fIIIa''iso as shading
+fIIIa..full <- c(gdgts_modern_sub$fIIIa.., gdgts_stack$fIIIa..)
+plot_PCA6 <-
+  fviz_pca_biplot(
+    X = brGDGTs_pca,
+    repel = TRUE,
+    label = "var",
+    col.ind = fIIIa..full,
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  ) + scale_shape_manual(values = c(21, 22, 23, 24)) +  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_color_continuous(type = "viridis") + labs(color = "fIIIa''")
+plot_PCA6
+
+grid.arrange(plot_PCA2, plot_PCA3, plot_PCA4, plot_PCA3b, nrow = 2)
+
+
+### Raberg22 pca
+Raberg22_reduced <-
+  Raberg_22 %>% filter(Sample.group != "Bone", Sample.group != "Groundwater")
+Raberg22_reduced_sample_group <- Raberg22_reduced$Sample.group
+Raberg22_reduced <- Raberg22_reduced[, 21:35]
+brGDGTs_data_reduced <- brGDGTs_data[, -3]
+
+# Remove "f" from column names in Raberg22
+names(Raberg22_reduced) <- sub("^f", "", names(Raberg22_reduced))
+
+# Reorder columns in Raberg22
+Raberg22_reduced <-
+  Raberg22_reduced[, colnames(brGDGTs_data_reduced)]
+
+# Perform rbind after aligning the columns
+Raberg22_plus_ELSA <- rbind(Raberg22_reduced, brGDGTs_data_reduced)
+
+Raberg22_pca <- prcomp(clr(Raberg22_plus_ELSA), scale = TRUE)
+
+sample_groups_Raberg22_plus_ELSA <-
+  c(Raberg22_reduced_sample_group,
+    as.character(sample_type_full_alt2))
+
+plot_PCA7 <-
+  fviz_pca_biplot(
+    X = Raberg22_pca,
+    repel = TRUE,
+    label = "var",
+    habillage = as.factor(sample_groups_Raberg22_plus_ELSA),
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )  +    theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  )
+plot_PCA7
+
+### BIGMAC dataset PCA
+big_mac_data <- read.csv("./BIGMaC-main/BIGMaC_GDGTs_Zenodo.csv")
+big_mac_brGDGTS <- big_mac_data[, 17:29]
+big_mac_brGDGTS <-
+  big_mac_brGDGTS[big_mac_data$Curated.Cluster != "Peat-type", ]
+colnames(big_mac_brGDGTS) <-
+  c(
+    "IIIa",
+    "IIIa.",
+    "IIIb",
+    "IIIb.",
+    "IIa",
+    "IIa.",
+    "IIb",
+    "IIb.",
+    "IIc",
+    "IIc.",
+    "Ia",
+    "Ib",
+    "Ic"
+  )
+brGDGTs_data_reduced2 <-
+  select(brGDGTs_data_reduced, all_of(colnames(big_mac_brGDGTS)))
+big_mac_brGDGTS_plus <-
+  rbind(brGDGTs_data_reduced2, big_mac_brGDGTS)
+big_mac_brGDGTS_plus <-
+  big_mac_brGDGTS_plus / rowSums(big_mac_brGDGTS_plus)
+big_mac_sample_type_plus <-
+  c(as.character(sample_type_full_alt2),
+    big_mac_data[big_mac_data$Curated.Cluster != "Peat-type", ]$Curated.Cluster)
+big_mac_sample_type_plus[big_mac_sample_type_plus == "Soil"] <-
+  "Eifel-soil"
+big_mac_sample_type_plus <-
+  factor(big_mac_sample_type_plus, levels = unique(big_mac_sample_type_plus))
+
+
+big_mac_pca <- prcomp(clr(big_mac_brGDGTS_plus), scale = TRUE)
+
+plot_PCA8 <-
+  fviz_pca_biplot(
+    X = big_mac_pca,
+    repel = TRUE,
+    label = "var",
+    habillage = as.factor(big_mac_sample_type_plus),
+    geom.ind = "point",
+    addEllipses = TRUE,
+    ellipse.type = "convex",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )  +    theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      size = 1
+    )
+  ) + scale_shape_manual(values = c(0, 2, 1, 1, 1, 1, 1, 4, 4, 4, 4)) + scale_color_manual(
+    values = c(
+      "#4477AA",
+      "#EE6677",
+      "#228833",
+      "#CCBB44",
+      "#66CCEE",
+      "#AA3377",
+      "#BBBBBB",
+      "#EE8866",
+      "#44BB99",
+      "#a2cc33cd"
+    )
+  ) + scale_fill_manual(
+    values = c(
+      "#4477AA",
+      "#EE6677",
+      "#228833",
+      "#CCBB44",
+      "#66CCEE",
+      "#AA3377",
+      "#BBBBBB",
+      "#EE8866",
+      "#44BB99",
+      "#a2cc33cd"
+    )
+  )
+
+
+plot_PCA8
+
+```
+
+## Boxplot of all brGDGT data
+
+```{r boxplot large}
+brGDGTs_piv <-
+  cbind(brGDGTs_data, sample_type_full_alt2) %>%  tidyr::pivot_longer(
+    cols = colnames(brGDGTs_data),
+    names_to = "Compounds",
+    values_to = "FA"
+  )
+colnames(brGDGTs_piv)[1] <- "Sample type"
+brGDGTs_piv$facet_group <- 0
+brGDGTs_piv <- brGDGTs_piv %>%
+  mutate(facet_group = case_when(
+    Compounds %in% c("IIIa", "IIIa.", "IIIa..", "IIIb", "IIIb.", "IIIc", "IIIc.") ~ 2,
+    Compounds %in% c("Ia", "Ib", "Ic", "IIa", "IIa.", "IIb", "IIb.", "IIc", "IIc.") ~ 1,
+    TRUE ~ facet_group
+  ))
+
+ggplot(brGDGTs_piv, aes(x = Compounds, y = FA, fill = `Sample type`)) +
+  geom_boxplot(position = position_dodge(), outlier.shape = NA) + theme_bw() +
+  scale_y_log10() + facet_wrap(~ facet_group, nrow = 2, scales = "free_x") +
+  khroma::scale_fill_bright()
+
+ggplot(
+  filter(brGDGTs_piv, Compounds == "IIIa.."),
+  aes(x = Compounds, y = FA, fill = `Sample type`)
+) +
+  geom_boxplot(position = position_dodge(), outlier.shape = NA) + theme_bw() +
+  khroma::scale_fill_bright()
+```
+# pastclim climate model output (Beyer et al., 2020)
+```{r pastclim, echo=FALSE}
+# pastclim::set_data_path(
+# path_to_nc = "C:\\Users\\paul.zander\\Documents\\ELSA\\GDGTs\\ELSA_GDGTs_R\\external_data\\pastclim")
+
+# pastclim::download_dataset(dataset="Beyer2020", bio_variables=c(
+# "bio01",
+# "bio04",
+# "bio05",
+# "bio06",
+# "bio07",
+# "biome",
+# "altitude",
+# "rugosity",
+# "temperature_01",
+# "temperature_02",
+# "temperature_03",
+# "temperature_04",
+# "temperature_05",
+# "temperature_06",
+# "temperature_07",
+# "temperature_08",
+# "temperature_09",
+# "temperature_10",
+# "temperature_11",
+# "temperature_12",
+# "precipitation_01",
+# "precipitation_02",
+# "precipitation_03",
+# "precipitation_04",
+# "precipitation_05",
+# "precipitation_06",
+# "precipitation_07",
+# "precipitation_08",
+# "precipitation_09",
+# "precipitation_10",
+# "precipitation_11",
+# "precipitation_12"))
+
+ELSA_pastclim <-  pastclim::location_series(
+  x = data.frame(longitude = 6.59, latitude = c(50.28)),
+  bio_variables =
+    c(
+      "bio01",
+      "bio04",
+      "bio05",
+      "bio06",
+      "bio07",
+      "biome",
+      "altitude",
+      "rugosity",
+      "temperature_01",
+      "temperature_02",
+      "temperature_03",
+      "temperature_04",
+      "temperature_05",
+      "temperature_06",
+      "temperature_07",
+      "temperature_08",
+      "temperature_09",
+      "temperature_10",
+      "temperature_11",
+      "temperature_12",
+      "precipitation_01",
+      "precipitation_02",
+      "precipitation_03",
+      "precipitation_04",
+      "precipitation_05",
+      "precipitation_06",
+      "precipitation_07",
+      "precipitation_08",
+      "precipitation_09",
+      "precipitation_10",
+      "precipitation_11",
+      "precipitation_12"
+    ),
+  dataset = "Beyer2020"
+)
+
+rowMeansPositive <- function(x) {
+  row_mean <- mean(x[x >= 0])
+  return(row_mean)
+}
+
+selected_data <- ELSA_pastclim[, 13:24]
+ELSA_pastclim$TMAF <- apply(selected_data, 1, rowMeansPositive)
+
+temp_range <- function(x) {
+  range <- max(x) - min(x)
+  return(range)
+}
+ELSA_pastclim$temp_range_month <-
+  apply(selected_data, 1, temp_range)
+
+ELSA_pastclim$age_b2k <- -ELSA_pastclim$time_bp
+```
+
+## Correlations with external paleoclimate data
+
+```{r correlation with extrernal, echo = FALSE, warning=FALSE, results = 'hide'}
+##correlation test
+#bin approx function for regularizing data
+bin_approx <- function(x, y, bins) {
+  ifelse(
+    is.na(binMeans(
+      y = y,
+      x = x,
+      bx = bins,
+      na.rm = TRUE
+    )),
+    approx(x,
+           y,
+           xout = bins[1:length(bins - 1)] + (mean(bins[1:2]) / 2))$y,
+    binMeans(
+      y = y,
+      x = x,
+      bx = bins,
+      na.rm = TRUE
+    )
+  )
+}
+
+select_reconstructions <-
+  data.frame(
+    Raberg21 = gdgts_stack_nonoverlap$TMAF_lake_Raberg21,
+    Raberg21_strat = gdgts_stack_corrected$TMAF_lake_Raberg21,
+    BAYMBT_MartinezSosa21 = gdgts_stack_nonoverlap$BAYMBT_lake_TMAF_MartínezSosa21,
+    BAYMBT_MartinezSosa21_strat = gdgts_stack_corrected$BAYMBT_lake_TMAF_MartínezSosa21
+  )
+
+#250 year bins
+bins_250 <- seq(0, 59000, 250)
+
+df_bin_250 <-
+  as.data.frame(lapply(select_reconstructions, function(column) {
+    bin_approx(y = column,
+               x = gdgts_stack_corrected$Age_b2k,
+               bins = bins_250)
+  })) %>% cbind(data.frame(
+    Greenland_temp = binMeans(
+      y = Greenland_temp$temp,
+      x = Greenland_temp$Age_b2k,
+      bx = bins_250,
+      na.rm = TRUE
+    ),
+    NA_SST = bin_approx(
+      y = MD01_2444_SST$SST_degC,
+      x = MD01_2444_SST$Age_ka_BP * 1000 + 50,
+      bins = bins_250
+    ),
+    EPICA = binMeans(
+      y = EPICA$Temperature,
+      x = EPICA$Age_b2k,
+      bx = bins_250,
+      na.rm = TRUE
+    )
+  ))
+
+df_bin_250 <- na.omit(df_bin_250)
+
+cor250 <-
+  geoChronR::corMatrix(df_bin_250[, 1:4],
+                       df_bin_250[, 5:7],
+                       isopersistent = TRUE,
+                       gaussianize = TRUE)
+cor250_r <- as.data.frame(matrix(cor250$r, nrow = 3, ncol = 4))
+colnames(cor250_r) <- colnames(df_bin_250[1:4])
+rownames(cor250_r) <- colnames(df_bin_250[5:7])
+
+cor250_p <-
+  as.data.frame(matrix(cor250$pSerial, nrow = 3, ncol = 4))
+colnames(cor250_p) <- colnames(df_bin_250[1:4])
+rownames(cor250_p) <- colnames(df_bin_250[5:7])
+cor250_p$bin_size <- 250
+
+#500 year bins
+bins_500 <- seq(0, 59000, 500)
+
+df_bin_500 <-
+  as.data.frame(lapply(select_reconstructions, function(column) {
+    bin_approx(y = column,
+               x = gdgts_stack_corrected$Age_b2k,
+               bins = bins_500)
+  })) %>% cbind(data.frame(
+    Greenland_temp = binMeans(
+      y = Greenland_temp$temp,
+      x = Greenland_temp$Age_b2k,
+      bx = bins_500,
+      na.rm = TRUE
+    ),
+    NA_SST = bin_approx(
+      y = MD01_2444_SST$SST_degC,
+      x = MD01_2444_SST$Age_ka_BP * 1000 + 50,
+      bins = bins_500
+    ),
+    EPICA = binMeans(
+      y = EPICA$Temperature,
+      x = EPICA$Age_b2k,
+      bx = bins_500,
+      na.rm = TRUE
+    )
+  ))
+
+df_bin_500 <- na.omit(df_bin_500)
+
+cor500 <-
+  geoChronR::corMatrix(df_bin_500[, 1:4],
+                       df_bin_500[, 5:7],
+                       isopersistent = TRUE,
+                       gaussianize = TRUE)
+cor500_r <- as.data.frame(matrix(cor500$r, nrow = 3, ncol = 4))
+colnames(cor500_r) <- colnames(df_bin_500[1:4])
+rownames(cor500_r) <- colnames(df_bin_500[5:7])
+
+cor500_p <-
+  as.data.frame(matrix(cor500$pSerial, nrow = 3, ncol = 4))
+colnames(cor500_p) <- colnames(df_bin_500[1:4])
+rownames(cor500_p) <- colnames(df_bin_500[5:7])
+cor500_p$bin_size <- 500
+
+#1000 year bins
+bins_1000 <- seq(0, 60000, 1000)
+
+df_bin_1000 <-
+  as.data.frame(lapply(select_reconstructions, function(column) {
+    bin_approx(y = column,
+               x = gdgts_stack_corrected$Age_b2k,
+               bins = bins_1000)
+  })) %>% cbind(data.frame(
+    Greenland_temp = binMeans(
+      y = Greenland_temp$temp,
+      x = Greenland_temp$Age_b2k,
+      bx = bins_1000,
+      na.rm = TRUE
+    ),
+    NA_SST = bin_approx(
+      y = MD01_2444_SST$SST_degC,
+      x = MD01_2444_SST$Age_ka_BP * 1000 + 50,
+      bins = bins_1000
+    ),
+    EPICA = binMeans(
+      y = EPICA$Temperature,
+      x = EPICA$Age_b2k,
+      bx = bins_1000,
+      na.rm = TRUE
+    )
+  ))
+
+df_bin_1000 <- na.omit(df_bin_1000)
+
+cor1000 <-
+  geoChronR::corMatrix(df_bin_1000[, 1:4],
+                       df_bin_1000[, 5:7],
+                       isopersistent = TRUE,
+                       gaussianize = TRUE)
+cor1000_r <- as.data.frame(matrix(cor1000$r, nrow = 3, ncol = 4))
+colnames(cor1000_r) <- colnames(df_bin_1000[1:4])
+rownames(cor1000_r) <- colnames(df_bin_1000[5:7])
+
+cor1000_p <-
+  as.data.frame(matrix(cor1000$pSerial, nrow = 3, ncol = 4))
+colnames(cor1000_p) <- colnames(df_bin_1000[1:4])
+rownames(cor1000_p) <- colnames(df_bin_1000[5:7])
+cor1000_p$bin_size <- 1000
+
+#250_glacial year bins
+bins_250_glacial <- seq(15000, 59000, 250)
+
+df_bin_250_glacial <-
+  as.data.frame(lapply(select_reconstructions, function(column) {
+    bin_approx(y = column,
+               x = gdgts_stack_corrected$Age_b2k,
+               bins = bins_250_glacial)
+  })) %>% cbind(data.frame(
+    Greenland_temp = binMeans(
+      y = Greenland_temp$temp,
+      x = Greenland_temp$Age_b2k,
+      bx = bins_250_glacial,
+      na.rm = TRUE
+    ),
+    NA_SST = bin_approx(
+      y = MD01_2444_SST$SST_degC,
+      x = MD01_2444_SST$Age_ka_BP * 1000 + 50,
+      bins = bins_250_glacial
+    ),
+    EPICA = binMeans(
+      y = EPICA$Temperature,
+      x = EPICA$Age_b2k,
+      bx = bins_250_glacial,
+      na.rm = TRUE
+    )
+  ))
+
+df_bin_250_glacial <- na.omit(df_bin_250_glacial)
+
+cor250_glacial <-
+  geoChronR::corMatrix(
+    df_bin_250_glacial[, 1:4],
+    df_bin_250_glacial[, 5:7],
+    isopersistent = TRUE,
+    gaussianize = TRUE
+  )
+cor250_glacial_r <-
+  as.data.frame(matrix(cor250_glacial$r, nrow = 3, ncol = 4))
+colnames(cor250_glacial_r) <- colnames(df_bin_250_glacial[1:4])
+rownames(cor250_glacial_r) <- colnames(df_bin_250_glacial[5:7])
+
+cor250_glacial_p <-
+  as.data.frame(matrix(cor250_glacial$pSerial, nrow = 3, ncol = 4))
+colnames(cor250_glacial_p) <- colnames(df_bin_250_glacial[1:4])
+rownames(cor250_glacial_p) <- colnames(df_bin_250_glacial[5:7])
+cor250_glacial_p$bin_size <- "250_glacial"
+
+#500 year bins
+bins_500_glacial <- seq(15000, 59000, 500)
+
+df_bin_500_glacial <-
+  as.data.frame(lapply(select_reconstructions, function(column) {
+    bin_approx(y = column,
+               x = gdgts_stack_corrected$Age_b2k,
+               bins = bins_500_glacial)
+  })) %>% cbind(data.frame(
+    Greenland_temp = binMeans(
+      y = Greenland_temp$temp,
+      x = Greenland_temp$Age_b2k,
+      bx = bins_500_glacial,
+      na.rm = TRUE
+    ),
+    NA_SST = bin_approx(
+      y = MD01_2444_SST$SST_degC,
+      x = MD01_2444_SST$Age_ka_BP * 1000 + 50,
+      bins = bins_500_glacial
+    ),
+    EPICA = binMeans(
+      y = EPICA$Temperature,
+      x = EPICA$Age_b2k,
+      bx = bins_500_glacial,
+      na.rm = TRUE
+    )
+    
+  ))
+
+df_bin_500_glacial <- na.omit(df_bin_500_glacial)
+
+cor500_glacial <-
+  geoChronR::corMatrix(
+    df_bin_500_glacial[, 1:4],
+    df_bin_500_glacial[, 5:7],
+    isopersistent = TRUE,
+    gaussianize = TRUE
+  )
+cor500_glacial_r <-
+  as.data.frame(matrix(cor500_glacial$r, nrow = 3, ncol = 4))
+colnames(cor500_glacial_r) <- colnames(df_bin_500_glacial[1:4])
+rownames(cor500_glacial_r) <- colnames(df_bin_500_glacial[5:7])
+
+cor500_glacial_p <-
+  as.data.frame(matrix(cor500_glacial$pSerial, nrow = 3, ncol = 4))
+colnames(cor500_glacial_p) <- colnames(df_bin_500_glacial[1:4])
+rownames(cor500_glacial_p) <- colnames(df_bin_500_glacial[5:7])
+cor500_glacial_p$bin_size <- "500_glacial"
+
+#1000 year bins
+bins_1000_glacial <- seq(15000, 60000, 1000)
+
+df_bin_1000_glacial <-
+  as.data.frame(lapply(select_reconstructions, function(column) {
+    bin_approx(y = column,
+               x = gdgts_stack_corrected$Age_b2k,
+               bins = bins_1000_glacial)
+  })) %>% cbind(data.frame(
+    Greenland_temp = binMeans(
+      y = Greenland_temp$temp,
+      x = Greenland_temp$Age_b2k,
+      bx = bins_1000_glacial,
+      na.rm = TRUE
+    ),
+    NA_SST = bin_approx(
+      y = MD01_2444_SST$SST_degC,
+      x = MD01_2444_SST$Age_ka_BP * 1000 + 50,
+      bins = bins_1000_glacial
+    ),
+    EPICA = binMeans(
+      y = EPICA$Temperature,
+      x = EPICA$Age_b2k,
+      bx = bins_1000_glacial,
+      na.rm = TRUE
+    )
+  ))
+
+df_bin_1000_glacial <- na.omit(df_bin_1000_glacial)
+
+cor1000_glacial <-
+  geoChronR::corMatrix(
+    df_bin_1000_glacial[, 1:4],
+    df_bin_1000_glacial[, 5:7],
+    isopersistent = TRUE,
+    gaussianize = TRUE
+  )
+cor1000_glacial_r <-
+  as.data.frame(matrix(cor1000_glacial$r, nrow = 3, ncol = 4))
+colnames(cor1000_glacial_r) <- colnames(df_bin_1000_glacial[1:4])
+rownames(cor1000_glacial_r) <- colnames(df_bin_1000_glacial[5:7])
+
+cor1000_glacial_p <-
+  as.data.frame(matrix(cor1000_glacial$pSerial, nrow = 3, ncol = 4))
+colnames(cor1000_glacial_p) <- colnames(df_bin_1000_glacial[1:4])
+rownames(cor1000_glacial_p) <- colnames(df_bin_1000_glacial[5:7])
+cor1000_glacial_p$bin_size <- "1000_glacial"
+
+p_val_full <-
+  rbind(
+    cor250_p,
+    cor500_p,
+    cor1000_p,
+    cor250_glacial_p,
+    cor500_glacial_p,
+    cor1000_glacial_p
+  )
+p_val_full_adj <-
+  cbind(as.data.frame(matrix(
+    p.adjust(as.matrix(p_val_full[, 1:4]), method = "fdr"), ncol = 4
+  )), p_val_full$bin_size)
+
+colnames(p_val_full_adj) <- colnames(p_val_full)
+rownames(p_val_full_adj) <- rownames(p_val_full)
+```
+##Tables of r and p-values for timeseries correlation
+```{r r and p-val tables, echo=FALSE}
+corr_climate_full <- rbind(cor250_r, cor500_r, cor1000_r, cor250_glacial_r, cor500_glacial_r, cor1000_glacial_r)
+
+print("Pearson r")
+corr_climate_full$bin_size <- p_val_full_adj$bin_size
+corr_climate_full
+
+print("Adjusted p-value")
+p_val_full_adj
+```
+
+## Deviation from Beyer model output
+```{r Beyer comp, echo=FALSE}
+#500 year bins centered on 0, 500, etcs
+select_recon_500 <-
+  as.data.frame(lapply(select_reconstructions, function(column) {
+    bin_approx(y = column,
+               x = gdgts_stack_corrected$Age_b2k,
+               bins = seq(-250, 59000, 500))
+  }))
+
+select_recon_500$age_b2k <- seq(0, 58500, 500)
+
+#adding matching pastclim output
+select_recon_500$ELSA_TMAF <-
+  ELSA_pastclim$TMAF[match(select_recon_500$age_b2k, ELSA_pastclim$age_b2k)]
+
+select_recon_500_complete <- na.omit(select_recon_500)
+rmse_values <-
+  sapply(select_recon_500_complete[, 1:6], function(column) {
+    sqrt(mean((
+      column - select_recon_500_complete$ELSA_TMAF
+    ) ^ 2, na.rm = TRUE))
+  })
+
+rmse_values
+```
+
+##Figure to compare calibration models
+
+```{r Temp recons summary plot, echo=FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height=9}
+#loading data for shaed areas of Gis and Heirich events
+GIs <- read.csv("./external_data/Greenland_interstadial_ages.csv")
+GIs <- GIs[, 1:3]
+heinrichs <- read.csv("./external_data/Heinrich_ages.csv")
+heinrichs <- heinrichs[, 1:3]
+
+#convert to rect data
+GIs_rect <- data.frame(xmin = GIs$End_age_b2k / 1000,
+                       xmax = GIs$Start_age_b2k / 1000)
+
+heinrichs_rect <- data.frame(xmin = heinrichs$End_age_b2k / 1000,
+                             xmax = heinrichs$Start_age_b2k / 1000)
+#Temp recons
+p20 <-
+  ggplot(gdgts_stack_nonoverlap) + geom_rect(
+    data = heinrichs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = 2,
+      ymax = 16
+    ),
+    fill = "lightblue",
+    alpha = 0.2
+  ) +
+  geom_rect(
+    data = GIs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = 2,
+      ymax = 16
+    ),
+    fill = "orange",
+    alpha = 0.2
+  ) +
+  geom_line(
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21,
+        x = Age_b2k / 1000,
+        color = "BAYMBT_lake_TMAF_MartínezSosa21")
+  ) +
+  theme_classic() + theme(legend.justification = c(1, 1),
+                          legend.position = c(1, 1)) +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + scale_y_continuous(breaks =
+                                                                                       seq(2, 16, 1), limits = c(2, 16)) +
+  geom_line(aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, color = "TMAF Raberg21")) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21,
+        x = Age_b2k / 1000,
+        color = "BAYMBT_lake_TMAF_strat")
+  ) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, color = "TMAF_Raberg21_strat"),
+    size = 0.8
+  ) +
+  scale_colour_manual(
+    "",
+    breaks = c(
+      "BAYMBT_lake_TMAF_MartínezSosa21",
+      "BAYMBT_lake_TMAF_strat",
+      "TMAF Raberg21",
+      "TMAF_Raberg21_strat"
+    ),
+    values = c(
+      "BAYMBT_lake_TMAF_MartínezSosa21" = "#ACD39E",
+      "BAYMBT_lake_TMAF_strat" = "#5AAE61",
+      "TMAF Raberg21" = "#C2A5CF",
+      "TMAF_Raberg21_strat" = "black"
+    )
+  ) +
+  ylab("Temp MAF (°C)") + xlab("Age (kyr b2k)") +
+  geom_hline(yintercept = 8.77, linetype = "dashed")
+p20
+
+#close-ups
+p21 <-   ggplot(gdgts_stack_nonoverlap) + geom_rect(
+  data = heinrichs_rect,
+  aes(
+    xmin = xmin,
+    xmax = xmax,
+    ymin = 2,
+    ymax = 16
+  ),
+  fill = "lightblue",
+  alpha = 0.2
+) +
+  geom_rect(
+    data = GIs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = 2,
+      ymax = 13
+    ),
+    fill = "orange",
+    alpha = 0.2
+  ) +
+  geom_line(
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21,
+        x = Age_b2k / 1000,
+        color = "BAYMBT_lake_TMAF_MartínezSosa21")
+  ) +
+  theme_classic() + theme(legend.position = "none") +
+  scale_x_continuous(breaks = seq(10, 18, 1), limits = c(10, 18)) + scale_y_continuous(breaks =
+                                                                                         seq(2, 13, 1), limits = c(2, 13)) +
+  geom_line(aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, color = "TMAF Raberg21")) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21,
+        x = Age_b2k / 1000,
+        color = "BAYMBT_lake_TMAF_strat")
+  ) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, color = "TMAF_Raberg21_strat"),
+    size = 0.8
+  ) +
+  
+  geom_point(
+    data = gdgts_stack_corrected,
+    aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, shape = Core_ID),
+    size = 2
+  ) +
+  geom_point(
+    data = gdgts_stack_corrected_overlap,
+    aes(x = Age_b2k / 1000, y = TMAF_lake_Raberg21, shape = Core_ID),
+    size = 2
+  ) +
+  scale_shape_manual(values = c(17, 17, 16, 16, 15, 15)) +
+  scale_colour_manual(
+    "",
+    breaks = c(
+      "BAYMBT_lake_TMAF_MartínezSosa21",
+      "BAYMBT_lake_TMAF_strat",
+      "TMAF Raberg21",
+      "TMAF_Raberg21_strat"
+    ),
+    values = c(
+      "BAYMBT_lake_TMAF_MartínezSosa21" = "#ACD39E",
+      "BAYMBT_lake_TMAF_strat" = "#5AAE61",
+      "TMAF Raberg21" = "#C2A5CF",
+      "TMAF_Raberg21_strat" = "black"
+    )
+  )  +
+  ylab("Temp MAF (°C)") + xlab("Age (kyr b2k)") + geom_line(
+    data = NGRIP,
+    aes(x = Age_b2k / 1000, y = (d18O_permil / 2) + 26),
+    alpha = 0.8,
+    color = "dark gray",
+    size = 0.3
+  )
+
+ymin = 0
+ymax = 11
+p22 <-
+  ggplot(gdgts_stack_nonoverlap) + geom_rect(
+    data = heinrichs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = ymin,
+      ymax = ymax
+    ),
+    fill = "lightblue",
+    alpha = 0.2
+  ) +
+  geom_rect(
+    data = GIs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = ymin,
+      ymax = ymax
+    ),
+    fill = "orange",
+    alpha = 0.2
+  ) +
+  geom_line(
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21,
+        x = Age_b2k / 1000,
+        color = "BAYMBT_lake_TMAF_MartínezSosa21")
+  ) +
+  theme_classic() + theme(legend.position = "none") +
+  scale_x_continuous(breaks = seq(27, 44, 1), limits = c(27, 44)) + scale_y_continuous(breaks =
+                                                                                         seq(ymin, ymax, 1),
+                                                                                       limits = c(ymin, ymax)) +
+  geom_line(aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, color = "TMAF Raberg21")) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21,
+        x = Age_b2k / 1000,
+        color = "BAYMBT_lake_TMAF_strat")
+  ) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, color = "TMAF_Raberg21_strat"),
+    size = 0.8
+  ) +
+  
+  scale_colour_manual(
+    "",
+    breaks = c(
+      "BAYMBT_lake_TMAF_MartínezSosa21",
+      "BAYMBT_lake_TMAF_strat",
+      "TMAF Raberg21",
+      "TMAF_Raberg21_strat"
+    ),
+    values = c(
+      "BAYMBT_lake_TMAF_MartínezSosa21" = "#ACD39E",
+      "BAYMBT_lake_TMAF_strat" = "#5AAE61",
+      "TMAF Raberg21" = "#C2A5CF",
+      "TMAF_Raberg21_strat" = "black"
+    )
+  ) +
+  ylab("Temp MAF (°C)") + xlab("Age (kyr b2k)") + geom_line(
+    data = NGRIP,
+    aes(x = Age_b2k / 1000, y = (d18O_permil / 2) + 24),
+    alpha = 0.8,
+    color = "dark gray",
+    size = 0.3
+  )
+
+
+# Arrange p21 and p22 in a single row
+row_plots <- arrangeGrob(p21, p22, ncol = 2, widths = c(1, 2))
+
+# Arrange p20 above the row_plots
+final_plot <-
+  arrangeGrob(p20, row_plots, nrow = 2, heights = c(1, 1))
+
+# Draw the final plot
+grid.draw(final_plot)
+```
+
+## Summary plot ELSA data
+
+```{r Elsa data plotting, echo=FALSE, fig.width=6, fig.height=4}
+#Raberg error envelope
+Raberg_corrected_max <-
+  gdgts_stack_corrected$TMAF_lake_Raberg21 + 2.14 #RMSE from calibration
+Raberg_corrected_min <-
+  gdgts_stack_corrected$TMAF_lake_Raberg21 - 2.14 #RMSE from calibration
+
+p1 <- ggplot() +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +  scale_y_continuous(breaks = seq(0, 16, 1)) +
+  geom_rect(
+    data = heinrichs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = min(gdgts_stack_corrected$TMAF_lake_Raberg21),
+      ymax = max(gdgts_stack_corrected$TMAF_lake_Raberg21)
+    ),
+    fill = "lightblue",
+    alpha = 0.2
+  ) +
+  geom_rect(
+    data = GIs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = min(gdgts_stack_corrected$TMAF_lake_Raberg21),
+      ymax = max(gdgts_stack_corrected$TMAF_lake_Raberg21)
+    ),
+    fill = "orange",
+    alpha = 0.2
+  ) +
+  # geom_linerange(data = data.frame(
+  #       x = gdgts_stack_corrected$Age_b2k / 1000,
+  #       ymin = Raberg_corrected_min,
+  #       ymax = Raberg_corrected_max
+  #     ),aes(x= x, ymin = ymin, ymax = ymax), color = "light gray")+
+  geom_ribbon(
+    data = data.frame(
+      x = gdgts_stack_corrected$Age_b2k / 1000,
+      ymin = Raberg_corrected_min,
+      ymax = Raberg_corrected_max
+    ),
+    aes(x = x, ymin = ymin, ymax = ymax),
+    fill = "light grey"
+  ) +
+  geom_hline(yintercept = 8.77, linetype = "dashed") +
+  geom_line(data = gdgts_stack_corrected, aes(y = TMAF_lake_Raberg21, x = Age_b2k /
+                                                1000)) +
+  
+  ylab("Temp MAF (°C)") +
+  xlab("Age (kyr b2k)")
+p1
+
+#GDGT_conc
+p29 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = Crenarcheol_conc, color = "Crenarcheol")) +
+  geom_line(aes(y = Isoprenoid_conc, color = "Isoprenoid")) +
+  geom_line(aes(y = Branched_conc, color = "Branched")) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("GDGT Concentration (ng/g)") +
+  scale_y_log10() +
+  xlab("Age (kyr b2k)") +
+  scale_color_brewer(palette = "Set2",
+                     labels = c("Branched", "Crenarcheol", "Isoprenoid")) +
+  theme(legend.position = "right") + theme(legend.position = c(0.85, 0.18))
+p29
+
+
+#IIIa''
+p2 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = fIIIa.. * 100)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("fIIIa'' (%)") + xlab("Age (kyr b2k)")
+p2
+
+#IIIa conc''
+p2b <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = fIIIa.. * Branched_conc)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("fIIIa'' ng/g") + xlab("Age (kyr b2k)")
+p2b
+
+
+#IIIa/IIa
+p3 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = sum_IIIa_div_IIa)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("ΣIIIa/ΣIIa") + xlab("Age (kyr b2k)")
+p3
+
+
+#IR (Russell 2018)
+p4 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = iso_index)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("IR") + xlab("Age (kyr b2k)")
+p4
+
+#BIT
+p14 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = BIT)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("BIT") + xlab("Age (kyr b2k)")
+p14
+
+#GDGT-0
+p18 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = GDGT0_index * 100)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("%GDGT-0") + xlab("Age (kyr b2k)")
+p18
+
+#GDGT-0/cren
+gdgts_stack_nonoverlap$GDTG0_cren <-
+  gdgts_stack_nonoverlap$GDGT0 / gdgts_stack_nonoverlap$Cren
+p27 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = GDTG0_cren)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + scale_y_log10() +
+  ylab("GDGT-0/cren") + xlab("Age (kyr b2k)")
+p27
+
+#MI
+p28 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = MI)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("Methane Index") + xlab("Age (kyr b2k)")
+
+#C-org
+p5 <- ggplot(ELSA_20_Corg, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = Corg), color = "red") +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + scale_y_log10() +
+  ylab("ELSA-20 Corg (%)") + xlab("Age (kyr b2k)")
+p5
+
+
+#Si/Al
+p6 <- ggplot(ELSA_20_Corg, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = Si.Al), color = "green") +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("Si/Al ratio") + xlab("Age (kyr b2k)")
+p6
+
+#XRF
+XRF$Ti[XRF$Ti < 0] <- 0.5
+XRF$Al[XRF$Al < 0] <- 0.5
+XRF$S_Ti <- XRF$S / XRF$Ti
+p15 <- ggplot(XRF, aes(x = ageb2k / 1000)) +
+  geom_line(aes(y = S_Ti)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + scale_y_log10() +
+  ylab("S/Ti") + xlab("Age (kyr b2k)")
+p15
+
+p16 <- ggplot(XRF, aes(x = ageb2k / 1000)) +
+  geom_line(aes(y = XRF$S / XRF$Fe)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + scale_y_log10() +
+  ylab("S/Fe") + xlab("Age (kyr b2k)")
+p16
+
+p17 <- ggplot(XRF, aes(x = ageb2k / 1000)) +
+  geom_line(aes(y = Ti)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("Ti (cps)") + xlab("Age (kyr b2k)")
+p17
+
+p25 <- ggplot(pollen, aes(x = Age / 1000)) +
+  geom_point(aes(y = Tree.Pollen), color = "Dark green") +
+  geom_line(aes(y = Tree.Pollen), color = "Dark green") +
+  geom_point(aes(y = Quercus), color = "#E7298A") +
+  geom_point(
+    aes(y = Quercus * 10),
+    color = "#E7298A",
+    fill = "transparent",
+    shape = 21,
+    alpha = 0.7
+  ) +
+  geom_point(
+    aes(y = Corylus * 10),
+    color = "#A6761D",
+    fill = "transparent",
+    shape = 21,
+    alpha = 0.7
+  ) +
+  geom_line(aes(y = Quercus), color = "#E7298A") +
+  geom_point(aes(y = Corylus), color = "#A6761D") +
+  geom_line(aes(y = Corylus), color = "#A6761D") +
+  # geom_ribbon(aes(ymin = 0, ymax = Corylus * 10), fill = "brown", color = "transparent", alpha = 0.2) +
+  # geom_ribbon(aes(ymin = 0, ymax = Quercus * 10), fill = "darkgoldenrod1", color = "transparent", alpha = 0.2) +
+  theme_classic() +
+  coord_cartesian(ylim = c(0, 100)) +  # Use coord_cartesian instead of ylim
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("Pollen (%)") +
+  xlab("Age (kyr b2k)") + theme(legend.position = "right") + theme(legend.position =
+                                                                     c(0.85, 0.18))
+p25
+
+#conductivity estimate Raberg
+gdgts_stack_nonoverlap$ln_cond <-
+  6.62 + 8.87 * (
+    gdgts_stack_nonoverlap$fIb / (
+      gdgts_stack_nonoverlap$fIb + gdgts_stack_nonoverlap$fIa + gdgts_stack_nonoverlap$fIc
+    )
+  ) + 5.12 * (
+    gdgts_stack_nonoverlap$fIIa. / (
+      gdgts_stack_nonoverlap$fIIa. + gdgts_stack_nonoverlap$fIIb. + gdgts_stack_nonoverlap$fIIc.
+    )
+  ) ^ 2 + 10.64 * (
+    gdgts_stack_nonoverlap$fIIa / (
+      gdgts_stack_nonoverlap$fIIa + gdgts_stack_nonoverlap$fIIb + gdgts_stack_nonoverlap$fIIc
+    )
+  ) ^ 2 - 8.59 * (
+    gdgts_stack_nonoverlap$fIIa / (
+      gdgts_stack_nonoverlap$fIIa + gdgts_stack_nonoverlap$fIIb + gdgts_stack_nonoverlap$fIIc
+    )
+  ) - 4.32 * (
+    gdgts_stack_nonoverlap$fIIIa. / (
+      gdgts_stack_nonoverlap$fIIIa. + gdgts_stack_nonoverlap$fIIIb. + gdgts_stack_nonoverlap$fIIIc.
+    )
+  ) ^ 2 - 5.31 * (
+    gdgts_stack_nonoverlap$fIIIa / (
+      gdgts_stack_nonoverlap$fIIIa + gdgts_stack_nonoverlap$fIIIb + gdgts_stack_nonoverlap$fIIIc
+    )
+  ) ^ 2 - 142.67 * (
+    gdgts_stack_nonoverlap$fIIIb / (
+      gdgts_stack_nonoverlap$fIIIa + gdgts_stack_nonoverlap$fIIIb + gdgts_stack_nonoverlap$fIIIc
+    )
+  ) ^ 2
+
+p32 <- ggplot(gdgts_stack_nonoverlap, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = ln_cond)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("ln(conductivity)") + xlab("Age (kyr b2k)")
+p32
+```
+
+```{r ELSA summary plot, echo = FALSE, fig.width = 8, fig.height = 12}
+grid.newpage()
+grid.draw(
+rbind(
+ggplotGrob(p1),
+ggplotGrob(p2 + scale_y_continuous(position = "right")),
+ggplotGrob(p3),
+ggplotGrob(p18 + scale_y_continuous(position = "right")),
+ggplotGrob(p14),
+ggplotGrob(p29 + scale_y_log10(position = "right")),
+ggplotGrob(p5 + scale_y_log10()),
+ggplotGrob(p15 + scale_y_log10(position = "right")),
+ggplotGrob(p17),
+ggplotGrob(p25 + scale_y_continuous(position = "right")),
+size = "last"
+)
+)
+```
+
+## Summary plot climate data
+
+```{r climate stack, echo=FALSE, fig.width=8, fig.height=12}
+#GDGT plot with shading
+p1b <- ggplot(gdgts_stack_nonoverlap) +
+  theme_classic() +
+  xlim(0, 60) + geom_rect(
+    data = heinrichs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = min(gdgts_stack_corrected$TMAF_lake_Raberg21),
+      ymax = max(gdgts_stack_corrected$TMAF_lake_Raberg21)
+    ),
+    fill = "lightblue",
+    alpha = 0.2
+  ) +
+  geom_rect(
+    data = GIs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = min(gdgts_stack_corrected$TMAF_lake_Raberg21),
+      ymax = max(gdgts_stack_corrected$TMAF_lake_Raberg21)
+    ),
+    fill = "orange",
+    alpha = 0.2
+  ) +
+  geom_line(data = gdgts_stack_corrected, aes(y = TMAF_lake_Raberg21, x = Age_b2k /
+                                                1000)) +
+  geom_point(data = gdgts_stack_corrected, aes(y = TMAF_lake_Raberg21, x = Age_b2k /
+                                                 1000)) +
+  ylab("Temp MAF (°C)") + xlab("Age (kyr b2k)")
+
+#NGRIP
+p7 <-
+  ggplot(NGRIP) + geom_rect(
+    data = heinrichs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = min(NGRIP$d18O_permil),
+      ymax = max(NGRIP$d18O_permil)
+    ),
+    fill = "lightblue",
+    alpha = 0.2
+  ) +
+  geom_rect(
+    data = GIs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = min(NGRIP$d18O_permil),
+      ymax = max(NGRIP$d18O_permil)
+    ),
+    fill = "orange",
+    alpha = 0.2
+  ) +
+  geom_line(aes(y = d18O_permil, x = Age_b2k / 1000)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("d18O (permil)") + xlab("Age (kyr b2k)") + scale_y_continuous(position = "right")
+
+#CO2
+p8 <- ggplot(EPICA_CO2, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = co2_ppm)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + ylim(180, 300) +
+  ylab("CO2 (ppm)") + xlab("Age (kyr b2k)") + scale_y_continuous(position = "right")
+
+#EPICA Temp
+p9 <- ggplot(EPICA, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = Temperature)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("Temp (°C)") + xlab("Age (kyr b2k)")
+
+#insolation
+p10 <- ggplot(insol_La04, aes(x = age_b2k / 1000)) +
+  geom_line(aes(y = Insol_June_50N)) +
+  # geom_line(aes(y = seasonal_gradient), linetype = "dashed")+
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("Insolation 50 °N (W/m2)") + xlab("Age (kyr b2k)")
+
+#insolation
+p10b <- ggplot(insol_La04, aes(x = age_b2k / 1000)) +
+  geom_line(aes(y = Insol_Dec_50N), color = "blue") +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("Insolation 50 °N (W/m2)") + xlab("Age (kyr b2k)") + scale_y_continuous(position = "right")
+
+#NA SSTs
+p11 <- ggplot(MD01_2444_SST, aes(x = Age_ka_BP + 0.05)) +
+  geom_line(aes(y = SST_degC)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + ylim(10, 20) +
+  ylab("MD01-2444 SST (°C)") + xlab("Age (kyr b2k)")
+
+#German_loess_temps
+p12 <- ggplot(loess_temp, aes(x = Age_ka_BP + 0.05)) +
+  geom_point(aes(y = Land_Temp_WS_degC, color = Site)) +
+  geom_line(aes(y = Land_Temp_WS_degC, color = Site)) +
+  scale_colour_manual(values = c("dark blue", "dark green")) +
+  theme_classic() + theme(legend.position = c(.9, .75)) +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("Warm-season Temp (°C)") + xlab("Age (kyr b2k)")
+
+#AMOC
+p13 <- ggplot(na.omit(AMOC), aes(x = age..ka. + 0.05)) +
+  geom_line(aes(y = X231Pa.230Th)) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + ylim(0.1, 0.04) +
+  ylab("231Pa/230Th") + xlab("Age (kyr b2k)") + scale_y_continuous(position = "right")
+
+
+#Greenland Temps
+p26 <- ggplot(Greenland_temp, aes(x = Age_b2k / 1000, y = temp)) +
+  geom_line() +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("GISP2-NGRIP Temp (°C)") + xlab("Age (kyr b2k)")
+
+#Iberian pollen temps
+IMPT <- read.csv("./external_data/SanchezGoni_pollen_temps.csv")
+
+#test plot
+p37 <-
+  ggplot(data = IMPT) +  theme_classic() + geom_line(aes(x = Age_b2k / 1000, y = DJF_temp, color = Core)) + geom_line(aes(x =
+                                                                                                                            Age_b2k , y = MTCO, color = Core), linetype = 2)
+
+#MD99-2343 plot
+p38 <-
+  ggplot(filter(IMPT, Core == "MD99-2343")) +  theme_classic() + geom_line(aes(x =
+                                                                                 Age_b2k / 1000, y = DJF_temp)) + geom_path(
+                                                                                   data = filter(IMPT, Core == "MD95-2042"),
+                                                                                   aes(x = Age_b2k / 1000, y = MTCO) ,
+                                                                                   color = "blue"
+                                                                                 ) +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) +
+  ylab("MD99-2343 Pollen Temp (°C)") + xlab("Age (kyr b2k)")
+
+
+
+grid.newpage()
+grid.draw(
+  rbind(
+    ggplotGrob(p1),
+    ggplotGrob(p26),
+    ggplotGrob(p11),
+    ggplotGrob(p12),
+    ggplotGrob(p9),
+    ggplotGrob(p8),
+    ggplotGrob(p10),
+    ggplotGrob(p10b),
+    ggplotGrob(p38),
+    size = "last"
+  )
+)
+```
+
+```{r poster stack, echo=FALSE}
+p20b <-  ggplot(gdgts_stack_nonoverlap) + geom_rect(
+  data = heinrichs_rect,
+  aes(
+    xmin = xmin,
+    xmax = xmax,
+    ymin = 2,
+    ymax = 16
+  ),
+  fill = "lightblue",
+  alpha = 0.2
+) +
+  geom_rect(
+    data = GIs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = 2,
+      ymax = 16
+    ),
+    fill = "orange",
+    alpha = 0.2
+  ) +
+  geom_ribbon(
+    data = data.frame(
+      x = gdgts_stack_corrected$Age_b2k / 1000,
+      ymin = Raberg_corrected_min,
+      ymax = Raberg_corrected_max
+    ),
+    aes(x = x, ymin = ymin, ymax = ymax),
+    fill = "light grey"
+  )    +
+  geom_line(
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21,
+        x = Age_b2k / 1000,
+        color = "BAYMBT_lake_TMAF_MartínezSosa21")
+    
+  ) +
+  theme_classic() + theme(legend.justification = c(1, 1),
+                          legend.position = c(1, 1)) +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + scale_y_continuous(breaks =
+                                                                                       seq(2, 16, 1), limits = c(2, 16)) +
+  geom_line(aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, color = "TMAF Raberg21")) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21,
+        x = Age_b2k / 1000,
+        color = "BAYMBT_lake_TMAF_corrected")
+  ) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(y = TMAF_lake_Raberg21, x = Age_b2k / 1000, color = "TMAF_Raberg21_corrected"),
+    size = 0.8
+  ) +
+  scale_colour_manual(
+    "",
+    breaks = c(
+      "BAYMBT_lake_TMAF_MartínezSosa21",
+      "BAYMBT_lake_TMAF_corrected",
+      "TMAF Raberg21",
+      "TMAF_Raberg21_corrected"
+    ),
+    values = c(
+      "TMAF Raberg21" = "#0077BB",
+      "BAYMBT_lake_TMAF_corrected" = "#CC3311",
+      "BAYMBT_lake_TMAF_MartínezSosa21" = "#e6a09bff",
+      "TMAF_Raberg21_corrected" = "black"
+    )
+  ) +
+  ylab("Temp MAF (°C)") + xlab("Age (kyr b2k)") +
+  geom_hline(yintercept = 8.77, linetype = "dashed")
+
+grid.newpage()
+grid.draw(
+  rbind(
+    ggplotGrob(p20b + labs(x = NULL)),
+    ggplotGrob(p2 + scale_y_continuous(position = "right") + labs(x = NULL)),
+    ggplotGrob(p3 + labs(x = NULL)),
+    ggplotGrob(p14 + scale_y_continuous(position = "right") + labs(x = NULL)),
+    ggplotGrob(p5 + labs(x = NULL)),
+    ggplotGrob(p15 + scale_y_log10(position = "right") + labs(x = NULL)),
+    ggplotGrob(p25 + labs(x = NULL)),
+    ggplotGrob(p10 + scale_y_continuous(position = "right") + labs(x = NULL)),
+    ggplotGrob(p26 + labs(x = NULL)),
+    ggplotGrob(p11 + scale_y_continuous(position = "right") + labs(x = NULL)),
+    ggplotGrob(p12 + labs(x = NULL)),
+    ggplotGrob(p9 + scale_y_continuous(position = "right")),
+    size = "last"
+  )
+)
+```
+
+## Big Mac! (Martinez-sosa 2023)
+
+```{r big mac, echo=FALSE}
+#testing soil vs lake indicators:
+big_mac_data$BIT <-
+  rowSums(big_mac_data[, c("X1022", "X1036.5", "X1036.6", "X1050.5", "X1050.6")]) / rowSums(big_mac_data[, c("X1022", "X1036.5", "X1036.6", "X1050.5", "X1050.6", "X1292")])
+
+
+big_mac_data$sum_IIIa_div_IIa <-
+  rowSums(big_mac_data[, c("X1050.5", "X1050.6")]) / rowSums(big_mac_data[, c("X1036.5", "X1036.6")])
+
+# Subset the data to include only the desired groups
+big_mac_subset <-
+  subset(big_mac_data, Curated.Cluster %in% c("Soil-type", "Lake-type"))
+
+# Perform ANOVA for each variable
+anova_sum_IIIa_div_IIa <-
+  aov(sum_IIIa_div_IIa ~ Curated.Cluster, data = big_mac_subset)
+anova_BIT <- aov(BIT ~ Curated.Cluster, data = big_mac_subset)
+
+# Summarize the ANOVA results
+summary(anova_sum_IIIa_div_IIa)
+summary(anova_BIT)
+
+big_mac_data %>%
+  pivot_longer(cols = c(BIT, sum_IIIa_div_IIa), names_to = "variable") %>%
+  ggplot(aes(x = Curated.Cluster, y = value, fill = variable)) +
+  geom_boxplot() +
+  labs(x = "Curated.Cluster", y = "Value") +
+  scale_fill_manual(values = c("BIT" = "blue", "sum_IIIa_div_IIa" = "green")) +
+  theme_minimal()
+
+percentage_lake_type_sum_IIIa_div_IIa_gt_1 <-
+  100 * sum(
+    big_mac_data$Curated.Cluster == "Lake-type" &
+      big_mac_data$sum_IIIa_div_IIa > 0.6,
+    na.rm = TRUE
+  ) / sum(big_mac_data$Curated.Cluster == "Lake-type", na.rm = TRUE)
+
+Raberg_22$sum_IIIa_div_IIa <-
+  rowSums(Raberg_22[, c("fIIIa", "fIIIa.")]) / rowSums(Raberg_22[, c("fIIa", "fIIa.")])
+
+percentage_lake_type_sum_IIIa_div_IIa_gt_1_raberg <-
+  100 * sum(
+    Raberg_22$Sample.type == "Lacustrine Sediment" &
+      between(Raberg_22$sum_IIIa_div_IIa, 0.6, 1),
+    na.rm = TRUE
+  ) / sum(Raberg_22$Sample.type == "Lacustrine Sediment", na.rm = TRUE)
+
+
+BIGMaC <- readRDS(file('./BIGMaC-main/BIGMaC.RDS'))
+
+#BIGMaC on modern samples
+#setup input for BIGMaC
+modern_BIGMaC_in <-
+  select(
+    gdgts_modern_sub,
+    c(
+      "GDGT0",
+      "GDGT1",
+      "GDGT2",
+      "GDGT3",
+      "Cren",
+      "Cren'",
+      "IIIa",
+      "IIIa.",
+      "IIIb",
+      "IIIb.",
+      "IIa",
+      "IIa.",
+      "IIb",
+      "IIb.",
+      "IIc",
+      "IIc.",
+      "Ia",
+      "Ib",
+      "Ic"
+    )
+  )
+colnames(modern_BIGMaC_in) <-
+  c(
+    "GDGT0",
+    "GDGT1",
+    "GDGT2",
+    "GDGT3",
+    "Cren",
+    "Cren'",
+    "IIIa",
+    "IIIa'",
+    "IIIb",
+    "IIIb'",
+    "IIa",
+    "IIa'",
+    "IIb",
+    "IIb'",
+    "IIc",
+    "IIc'",
+    "Ia",
+    "Ib",
+    "Ic"
+  )
+modern_BIGMaC_in <- modern_BIGMaC_in / rowSums(modern_BIGMaC_in)
+modern_BIGMaC_in <- as_tibble(modern_BIGMaC_in)
+modern_BIGMaC_out <- predict(BIGMaC, new_data = modern_BIGMaC_in)
+modern_BIGMaC_out <-
+  cbind(modern_BIGMaC_out, gdgts_modern_sub[, c(1, 3, 41)])
+
+#BIGMaC on ELSA stack
+stack_BIGMaC_in <-
+  select(
+    gdgts_stack,
+    c(
+      "GDGT0",
+      "GDGT1",
+      "GDGT2",
+      "GDGT3",
+      "Cren",
+      "Cren'",
+      "IIIa",
+      "IIIa.",
+      "IIIb",
+      "IIIb.",
+      "IIa",
+      "IIa.",
+      "IIb",
+      "IIb.",
+      "IIc",
+      "IIc.",
+      "Ia",
+      "Ib",
+      "Ic"
+    )
+  )
+colnames(stack_BIGMaC_in) <-
+  c(
+    "GDGT0",
+    "GDGT1",
+    "GDGT2",
+    "GDGT3",
+    "Cren",
+    "Cren'",
+    "IIIa",
+    "IIIa'",
+    "IIIb",
+    "IIIb'",
+    "IIa",
+    "IIa'",
+    "IIb",
+    "IIb'",
+    "IIc",
+    "IIc'",
+    "Ia",
+    "Ib",
+    "Ic"
+  )
+stack_BIGMaC_in <- stack_BIGMaC_in / rowSums(stack_BIGMaC_in)
+stack_BIGMaC_in <- as_tibble(stack_BIGMaC_in)
+stack_BIGMaC_out <- predict(BIGMaC, new_data = stack_BIGMaC_in)
+stack_BIGMaC_out <-
+  cbind(stack_BIGMaC_out, gdgts_stack[, c(1, 3, 4, 52, 55, 65)])
+gdgts_stack$BIGMaC_class <- stack_BIGMaC_out$.pred_class
+gdgts_stack_corrected$BIGMaC_class <-
+  stack_BIGMaC_out[stack_BIGMaC_out$Sample_ID %in% gdgts_stack_corrected$Sample_ID, ]$.pred_class
+
+#plot temps with sample classes
+ggplot(gdgts_stack_corrected, aes(x = Age_b2k / 1000)) +
+  geom_line(aes(y = BAYMBT_lake_TMAF_MartínezSosa21, color = "BAYMBT_lake_TMAF_MartínezSosa21")) +
+  geom_line(aes(y = fIIIa.. * 100, color = "black"), alpha = 0.5) +
+  theme_classic() + theme(legend.justification = c(1, 1),
+                          legend.position = c(1, 1)) +
+  xlim(0, 60) +
+  geom_line(aes(y = TMAF_lake_Raberg21, color = "TMAF Raberg21")) +
+  geom_point(aes(y = TMAF_lake_Raberg21, color = BIGMaC_class),
+             size = 3,
+             shape = 1) +
+  geom_point(
+    aes(y = BAYMBT_lake_TMAF_MartínezSosa21, color = BIGMaC_class),
+    size = 3,
+    shape = 1
+  ) +
+  scale_color_manual(
+    values = c(
+      "TMAF Raberg21" = "dark blue",
+      "BAYMBT_lake_TMAF_MartínezSosa21" = "red",
+      `Marine-type` = "dark orange",
+      `Lake-type` = "#80cdc1"
+    )
+  ) +
+  ylab("Temp MAF (°C)") + xlab("Age (kyr b2k)")
+
+#Plot PCA with BigMac classes
+big_mac_full <-
+  c(modern_BIGMaC_out$.pred_class, gdgts_stack$BIGMaC_class)
+
+plot_PCA9 <-
+  fviz_pca_biplot(
+    X = Full_pca,
+    repel = TRUE,
+    label = "var",
+    habillage = as.factor(big_mac_full),
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )  +    theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      linewidth = 1
+    )
+  ) + khroma::scale_color_bright()
+plot_PCA9
+
+plot_PCA10 <-
+  fviz_pca_biplot(
+    X = brGDGTs_pca,
+    repel = TRUE,
+    label = "var",
+    habillage = as.factor(big_mac_full),
+    geom.ind = "point",
+    alpha.ind = 0.8,
+    col.var = "black"
+  )  +    theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      linewidth = 1
+    )
+  ) + khroma::scale_color_bright()
+plot_PCA10
+```
+
+#### Comparing brGDGT temps with Greenland temps
+
+```{r Greenland temp comp, echo=FALSE}
+##setting Greenland Temp records to resolution of GDGTs
+sample_bins <- c(rbind(gdgts_stack$Age_end, gdgts_stack$Age_start))
+sample_bins <- unique(na.omit(sample_bins))
+sample_bins <-
+  sample_bins[!(sample_bins %in% c(55996.9, 55821.9, 43010))] #lumping together samples with same ages
+
+Greenland_temp_comparison <-
+  data.frame(
+    temp = binMeans(
+      y = Greenland_temp$temp,
+      x = Greenland_temp$Age_b2k,
+      bx = sample_bins,
+      na.rm = TRUE
+    ),
+    Age_start = sample_bins[2:length(sample_bins)]
+  )
+Greenland_temp_comparison <-
+  filter(Greenland_temp_comparison,
+         Age_start %in% gdgts_stack_nonoverlap$Age_start)
+
+Greenland_temp_comparison$Age_b2k <-
+  gdgts_stack_nonoverlap$Age_b2k[match(Greenland_temp_comparison$Age_start,
+                                       gdgts_stack_nonoverlap$Age_start)]
+
+Greenland_temp_comparison[is.na(Greenland_temp_comparison$temp),]$temp <-
+  approx(
+    Greenland_temp$Age_b2k,
+    Greenland_temp$temp,
+    xout = Greenland_temp_comparison[is.na(Greenland_temp_comparison$temp),]$Age_b2k,
+    method = "linear"
+  )$y
+
+
+#combine samples with same ages to match this new dataframe resolution
+Greenland_temp_comparison <-
+  cbind(Greenland_temp_comparison, as.data.frame(lapply(select_reconstructions, function(column) {
+    bin_approx(y = column,
+               x = gdgts_stack_corrected$Age_b2k,
+               bins = c(0, unique(Greenland_temp_comparison$Age_start)))
+  })))
+
+#scale and then calculate offsets (residuals)
+Greenland_temp_comparison$Greenland_scaled <-
+  scale(Greenland_temp_comparison$temp) * sd(as.matrix(Greenland_temp_comparison[, 4:7])) + mean(as.matrix(Greenland_temp_comparison[, 4:7]))
+
+Greenland_temp_comparison$Raberg21_res <-
+  Greenland_temp_comparison$Raberg21 - Greenland_temp_comparison$Greenland_scaled
+Greenland_temp_comparison$Raberg21_strat_res <-
+  Greenland_temp_comparison$Raberg21_strat - Greenland_temp_comparison$Greenland_scaled
+Greenland_temp_comparison$BAYMBT_MartinezSosa21_res <-
+  Greenland_temp_comparison$BAYMBT_MartinezSosa21 - Greenland_temp_comparison$Greenland_scaled
+Greenland_temp_comparison$BAYMBT_MartinezSosa21_strat_res <-
+  Greenland_temp_comparison$BAYMBT_MartinezSosa21_strat - Greenland_temp_comparison$Greenland_scaled
+
+#plot residual curves
+ggplot(Greenland_temp_comparison) + geom_rect(
+  data = heinrichs_rect,
+  aes(
+    xmin = xmin,
+    xmax = xmax,
+    ymin = -8,
+    ymax = 6
+  ),
+  fill = "lightblue",
+  alpha = 0.2
+) +
+  geom_rect(
+    data = GIs_rect,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = -8,
+      ymax = 6
+    ),
+    fill = "orange",
+    alpha = 0.2
+  ) +
+  geom_line(aes(y = Raberg21_res, x = Age_b2k / 1000, color = "Raberg21_res"),
+            linewidth = 0.3) +
+  theme_classic() +
+  scale_x_continuous(breaks = seq(0, 60, 5), limits = c(0, 60)) + scale_y_continuous(limits = c(-8, 6)) +
+  geom_line(
+    aes(y = BAYMBT_MartinezSosa21_res, x = Age_b2k / 1000, color = "BAYMBT_MartinezSosa21_res"),
+    linewidth = 0.3
+  ) +
+  geom_line(
+    aes(y = BAYMBT_MartinezSosa21_strat_res, x = Age_b2k / 1000, color = "BAYMBT_MartinezSosa21_strat_res"),
+    linewidth = 0.3
+  ) +
+  geom_line(aes(y = Raberg21_strat_res, x = Age_b2k / 1000, color = "Raberg21_strat_res"),
+            linewidth = 0.8) +
+  scale_colour_manual(
+    "",
+    breaks = c(
+      "BAYMBT_MartinezSosa21_res",
+      "BAYMBT_MartinezSosa21_strat_res",
+      "Raberg21_res",
+      "Raberg21_strat_res"
+    ),
+    values = c(
+      "BAYMBT_MartinezSosa21_res" = "#ACD39E",
+      "BAYMBT_MartinezSosa21_strat_res" = "#5AAE61",
+      "Raberg21_res" = "#C2A5CF",
+      "Raberg21_strat_res" = "black"
+    )
+  ) +
+  ylab("Temp MAF (°C)") + xlab("Age (kyr b2k)") +
+  geom_hline(yintercept = 0, linetype = "dashed")
+```
+
+# Bin correlations with Greenland Temp residuals
+```{r Greenland temp residual correlation, echo = FALSE, warning=FALSE,  results = 'hide'}
+### 250 year bins
+greenland_bins_250  <- seq(0, 59000, 250)
+greenland_bin_250 <-
+  as.data.frame(lapply(Greenland_temp_comparison[, 9:12], function(column) {
+    bin_approx(y = column,
+               x = Greenland_temp_comparison$Age_b2k,
+               bins = greenland_bins_250)
+  })) %>% cbind(
+    data.frame(
+      Corg = bin_approx(
+        y = ELSA_20_Corg$Corg,
+        x = ELSA_20_Corg$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      fIIIa.. = bin_approx(
+        y = gdgts_stack_nonoverlap$fIIIa..,
+        x = gdgts_stack_nonoverlap$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      sum_IIIa_div_IIa = bin_approx(
+        y = gdgts_stack_nonoverlap$sum_IIIa_div_IIa,
+        x = gdgts_stack_nonoverlap$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      GDGT0_index = bin_approx(
+        y = gdgts_stack_nonoverlap$GDGT0_index,
+        x = gdgts_stack_nonoverlap$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      IR = bin_approx(
+        y = gdgts_stack_nonoverlap$iso_index,
+        x = gdgts_stack_nonoverlap$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      BIT = bin_approx(
+        y = gdgts_stack_nonoverlap$BIT,
+        x = gdgts_stack_nonoverlap$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      S_Ti = bin_approx(
+        y = log(XRF$S_Ti),
+        x = XRF$ageb2k,
+        bins = greenland_bins_250
+      ),
+      Greenland_temp = bin_approx(
+        y = Greenland_temp$temp,
+        x = Greenland_temp$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      NA_SST = bin_approx(
+        y = MD01_2444_SST$SST_degC,
+        x = MD01_2444_SST$Age_ka_BP * 1000 + 50,
+        bins = greenland_bins_250
+      ) ,
+      EPICA_temp = bin_approx(
+        y = EPICA$Temperature,
+        x = EPICA$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      EPICA_CO2 = bin_approx(
+        y = EPICA_CO2$co2_ppm,
+        x = EPICA_CO2$Age_b2k,
+        bins = greenland_bins_250
+      ),
+      insol = bin_approx(
+        y = insol_La04$Insol_June_50N,
+        x = insol_La04$age_b2k,
+        bins = greenland_bins_250
+      )
+    )
+  )
+
+greenland_bin_250 <- na.omit(greenland_bin_250)
+
+greenland_bin_reduced <-
+  select(
+    greenland_bin_250,
+    colnames(greenland_bin_250)[1:4],
+    Corg ,
+    fIIIa..,
+    sum_IIIa_div_IIa,
+    BIT,
+    Greenland_temp,
+    NA_SST,
+    EPICA_temp,
+    EPICA_CO2,
+    insol
+  )
+
+#calculate correlation between greenland residuals and other factors
+cor_greenland_res <-
+  geoChronR::corMatrix(
+    greenland_bin_reduced[, 1:4],
+    greenland_bin_reduced[, 5:13],
+    isopersistent = TRUE,
+    gaussianize = TRUE
+  )
+cor_greenland_res_r <-
+  as.data.frame(matrix(cor_greenland_res$r, nrow = 9, ncol = 4))
+colnames(cor_greenland_res_r) <-
+  colnames(greenland_bin_reduced[1:4])
+rownames(cor_greenland_res_r) <-
+  colnames(greenland_bin_reduced[5:13])
+
+cor_greenland_res_p <-
+  as.data.frame(matrix(p.adjust(
+    as.matrix(cor_greenland_res$pSerial), method = "fdr"
+  ), ncol = 4))
+colnames(cor_greenland_res_p) <- colnames(cor_greenland_res_r)
+rownames(cor_greenland_res_p) <- rownames(cor_greenland_res_r)
+
+
+greenland_res_r_piv <-
+  tibble::rownames_to_column(cor_greenland_res_r, var = "Row") %>% tidyr::pivot_longer(
+    cols = colnames(cor_greenland_res_r),
+    names_to = "GDGT model",
+    values_to = "r"
+  )
+colnames(greenland_res_r_piv)[1] <- "proxy"
+
+greenland_res_r_piv$p <-
+  cor_greenland_res_p %>% tidyr::pivot_longer(
+    cols = colnames(cor_greenland_res_r),
+    names_to = "GDGT model",
+    values_to = "r"
+  ) %>% select(r)
+
+colnames(greenland_res_r_piv)[4] <- "p_adj"
+
+ggplot(greenland_res_r_piv,
+       aes(
+         x = forcats::as_factor(proxy),
+         y = r,
+         color = forcats::as_factor(`GDGT model`)
+       )) +
+  geom_point(position = position_dodge(0.5),
+             size = 3,
+             shape = 1) +  # Add position_jitter with desired width and height
+  scale_color_manual(values = c("#C2A5CF", "black", "#762A83", "#ACD39E", "#5AAE61", "#1B7837")) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = -45, hjust = 0)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  ylim(c(-0.8, 0.4))
+```
+
+# Warming Events
+```{r Warming Events, echo=FALSE}
+warm_events <- rbind(c("Early_hol", 11700, 8326), GIs)
+warm_events <- warm_events[-16, ] #removing GI15.1, very short
+warm_events[16, 1] <- "GI-15"
+warm_events[3, 3] <- 22400 #adding a few hundred years to GI-2
+
+warm_bins <-
+  sort(as.numeric(c(
+    rbind(warm_events$Start_age_b2k, warm_events$End_age_b2k)
+  )))
+
+Raberg21_strat_GIs <-
+  data.frame(
+    End_age_b2k = warm_bins[1:length(warm_bins) - 1],
+    Raberg21_strat = binMeans(
+      y = gdgts_stack_corrected$TMAF_lake_Raberg21,
+      gdgts_stack_corrected$Age_b2k,
+      bx = warm_bins
+    ),
+    count =  attr(
+      binMeans(
+        y = gdgts_stack_corrected$TMAF_lake_Raberg21,
+        gdgts_stack_corrected$Age_b2k,
+        bx = warm_bins
+      ),
+      "count"
+    )
+  )
+warm_events$Raberg21_strat <-
+  Raberg21_strat_GIs[Raberg21_strat_GIs$End_age_b2k %in% warm_events$End_age_b2k, ]$Raberg21_strat
+warm_events$count <-
+  Raberg21_strat_GIs[Raberg21_strat_GIs$End_age_b2k %in% warm_events$End_age_b2k, ]$count
+warm_events <- na.omit(warm_events)
+warm_events$warming <-
+  warm_events$Raberg21_strat - Raberg21_strat_GIs[Raberg21_strat_GIs$End_age_b2k %in% warm_events$Start_age_b2k, ]$Raberg21_strat
+warm_events$stad_count <-
+  Raberg21_strat_GIs[Raberg21_strat_GIs$End_age_b2k %in% warm_events$Start_age_b2k, ]$count
+
+greenland_GIs <-
+  data.frame(
+    End_age_b2k = warm_bins[1:length(warm_bins) - 1],
+    greenland_temp = binMeans(y = Greenland_temp$temp, Greenland_temp$Age_b2k, bx =
+                                warm_bins)
+  )
+warm_events$greenland_temp <-
+  greenland_GIs[greenland_GIs$End_age_b2k %in% warm_events$End_age_b2k, ]$greenland_temp
+warm_events$greenland_warming <-
+  warm_events$greenland_temp - greenland_GIs[greenland_GIs$End_age_b2k %in% warm_events$Start_age_b2k, ]$greenland_temp
+
+warm_events
+write.csv(warm_events, "warm_events.csv")
+
+early_mid_hol_temp <-
+  filter(gdgts_stack_corrected, between(Age_b2k, 4250, 11700)) %>% select(TMAF_lake_Raberg21)
+mean(early_mid_hol_temp$TMAF_lake_Raberg21)
+```
+
+# LGM vs modern seasonal range
+```{r LGM seasonality, echo=FALSE}
+LGM_TMAF <-
+  mean(gdgts_stack_corrected[between(gdgts_stack_corrected$Age_b2k, 24000, 28080),]$TMAF_lake_Raberg21)
+LGM_TMAF_range <- c(LGM_TMAF + 2.14, LGM_TMAF - 2.14)
+LGM_TMAF_range
+
+Beetle_LGM_month_temp_hi <-
+  scales::rescale(alt_corr_month_temp$AU, to = c(-20, 9.5))
+Beetle_LGM_month_temp_lo <-
+  scales::rescale(alt_corr_month_temp$AU, to = c(-30, 6))
+Beetle_TMAF_LGM_hi <-
+  mean(Beetle_LGM_month_temp_hi[Beetle_LGM_month_temp_hi > 0])
+Beetle_TMAF_LGM_lo <-
+  mean(Beetle_LGM_month_temp_lo[Beetle_LGM_month_temp_lo > 0])
+Beetle_TMAF_LGM_lo
+Beetle_TMAF_LGM_hi
+
+ggplot() + theme_bw() + geom_ribbon(
+  data = data.frame(x = 1:12,
+                    ymin = Beetle_LGM_month_temp_lo,
+                    ymax = Beetle_LGM_month_temp_hi),
+  aes(x = x, ymin = ymin, ymax = ymax),
+  fill = "light blue"
+) + geom_line(data = alt_corr_month_temp, (aes(x = 1:12, y = AU))) +
+  geom_point(data = alt_corr_month_temp, (aes(x = 1:12, y = AU))) + xlab("Months") +
+  scale_x_continuous(breaks = 1:12) + ylab("Temp °C")
+
+# Heinrich 3
+HE3_example <-
+  data.frame(HE3_temps = t(ELSA_pastclim[ELSA_pastclim$age_b2k == 32000, 13:24]))
+colnames(HE3_example) <- "pre_HE3_pastclim"
+HE3_example$HE3_hypo1 <-
+  scales::rescale(HE3_example$pre_HE3_pastclim, to = c(
+    min(HE3_example$pre_HE3_pastclim) - 10 ,
+    max(HE3_example$pre_HE3_pastclim)
+  ))
+pastclim_LGM <-
+  data.frame(pastclim_LGM = colMeans(ELSA_pastclim[between(ELSA_pastclim$age_b2k, 24000, 29000), 13:24]))
+HE3_example$HE3_hypo2 <-
+  scales::rescale(pastclim_LGM$pastclim_LGM, to = c(min(pastclim_LGM) - 5, max(pastclim_LGM)))
+
+
+mean(pastclim_LGM[pastclim_LGM > 0, ])
+mean(HE3_example[HE3_example$HE3_hypo2 > 0, ]$HE3_hypo2)
+mean(gdgts_stack_corrected[between(gdgts_stack_corrected$Age_b2k, 30400, 32400), ]$TMAF_lake_Raberg21)
+mean(gdgts_stack_corrected[between(gdgts_stack_corrected$Age_b2k, 29000, 30400), ]$TMAF_lake_Raberg21)
+
+#HTM and modern tests
+pastclim_modern <-
+  data.frame(pastclim_LGM = colMeans(ELSA_pastclim[ELSA_pastclim$age_b2k ==
+                                                     0, 13:24]))
+HTM <-
+  scales::rescale(alt_corr_month_temp$AU, to = c(
+    min(alt_corr_month_temp$AU) - 1,
+    max(alt_corr_month_temp$AU) + 2
+  ))
+mean(HTM[HTM > 0])
+
+#plot of monthly temperature patters
+p31 <- ggplot() + theme_bw() + geom_ribbon(
+  data = data.frame(x = 1:12,
+                    ymin = Beetle_LGM_month_temp_lo,
+                    ymax = Beetle_LGM_month_temp_hi),
+  aes(x = x, ymin = ymin, ymax = ymax),
+  fill = "#7570B3",
+  alpha = 0.5
+) +
+  geom_line(data = HE3_example, (aes(
+    x = 1:12, y = pastclim_LGM$pastclim_LGM
+  )), color = "#1B9E77") +
+  geom_line(data = HE3_example,
+            (aes(x = 1:12, y = HE3_example$HE3_hypo2)),
+            linetype = "dashed",
+            color = "#1B9E77") +
+  geom_line(data = alt_corr_month_temp, (aes(x = 1:12, y = AU)), color = "#D95F02") +
+  geom_line((aes(x = 1:12, y = HTM)), color = "blue") +
+  geom_line(data = pastclim_modern, (aes(x = 1:12, y = pastclim_LGM)), color = "red") +
+  xlab("Months") + ylim(c(-30, 20)) +
+  scale_x_continuous(breaks = 1:12) + ylab("Temp °C")
+
+#comparison of different methods to estimate MAAT/TMAF
+LGM_HE_temp_comp <-  data.frame(
+  proxy = c(
+    "Modern",
+    "GDGTs LGM",
+    "Coleoptera",
+    "PastClim LGM",
+    "GDGTs HE3",
+    "HE3 scenario",
+    "Modern",
+    "Coleoptera",
+    "NGT LGM",
+    "DA LGM",
+    "PastClim LGM",
+    "HE3 scenario"
+  ),
+  Season = c(rep("TMAF", 6), rep("MAAT", 6)),
+  value = c(
+    gdgts_modern$CRUTS_TMAF_alt_corr[22],
+    LGM_TMAF,
+    mean(Beetle_TMAF_LGM_lo, Beetle_TMAF_LGM_hi),
+    mean(pastclim_LGM[pastclim_LGM > 0]),
+    mean(gdgts_stack_corrected[between(gdgts_stack_corrected$Age_b2k, 29000, 30400),]$TMAF_lake_Raberg21),
+    mean(HE3_example[HE3_example$HE3_hypo2 > 0,]$HE3_hypo1),
+    gdgts_modern$CRUTS_MAAT_alt_corr[22],
+    mean(c(
+      Beetle_LGM_month_temp_hi, Beetle_LGM_month_temp_lo
+    )),
+    gdgts_modern$CRUTS_MAAT_alt_corr[22] - 9,
+    gdgts_modern$CRUTS_MAAT_alt_corr[22] - 10.023,
+    mean(pastclim_LGM$pastclim_LGM),
+    mean(HE3_example$HE3_hypo2)
+  )
+)
+
+LGM_HE_temp_comp$error <-
+  c(
+    0,
+    2.14,
+    (Beetle_TMAF_LGM_hi - Beetle_TMAF_LGM_lo) / 2,
+    0,
+    2.14,
+    0,
+    0,
+    (
+      mean(Beetle_LGM_month_temp_hi) - mean(Beetle_LGM_month_temp_lo)
+    ) / 2,
+    0,
+    0,
+    0,
+    0
+  )
+
+p32 <-
+  ggplot(LGM_HE_temp_comp,
+         aes(
+           x = proxy,
+           y = value,
+           shape = Season,
+           fill = Season,
+           color = Season
+         )) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(
+    ymin = value - error,
+    ymax = value + error,
+    color = Season
+  ), width = 0) +
+  scale_shape_manual(values = c("MAAT" = 0, "TMAF" = 21)) +
+  scale_fill_manual(values = c("MAAT" = "transparent", "TMAF" = "black")) +
+  scale_color_manual(values = c("MAAT" = "Blue", "TMAF" = "black")) +
+  scale_x_discrete(
+    limits = c(
+      "Modern",
+      "GDGTs LGM",
+      "Coleoptera",
+      "NGT LGM",
+      "DA LGM",
+      "PastClim LGM",
+      "HE3 scenario",
+      "GDGTs HE3"
+    )
+  ) +
+  theme_bw() + ylim(c(-30, 20)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Convert ggplot objects to grobs
+grob1 <- ggplotGrob(p31)
+grob2 <- ggplotGrob(p32)
+
+# Combine the grobs and fix the y-axes
+combined_chart <- arrangeGrob(grob1, grob2, ncol = 2)
+
+# Display the combined chart
+grid.newpage()
+grid.draw(combined_chart)
+```
+
+# Comparing with pastclim model output (Beyer)
+
+``` {r pastclim plot, echo=FALSE}
+p34 <- ggplot(ELSA_pastclim) +
+  geom_ribbon(
+    data = data.frame(
+      x = gdgts_stack_corrected$Age_b2k,
+      ymin = Raberg_corrected_min,
+      ymax = Raberg_corrected_max
+    ),
+    aes(x = x, ymin = ymin, ymax = ymax),
+    fill = "light grey"
+  ) +
+  geom_line(
+    data = gdgts_stack_corrected,
+    aes(x = Age_b2k, y = TMAF_lake_Raberg21, color = "TMAF (brGDGTs)"),
+    linetype = "dashed"
+  ) +
+  geom_line(data = ELSA_pastclim, aes(x = age_b2k, y = bio01, color = "MAAT (Beyer 2020)")) +
+  geom_line(data = ELSA_pastclim, aes(x = age_b2k, y = TMAF, color = "TMAF (Beyer 2020)")) +
+  geom_line(data = ELSA_pastclim,
+            aes(x = age_b2k, y = temp_range_month, color = "Ann range (Beyer 2020)")) +
+  xlim(c(0, 60000)) +
+  geom_hline(yintercept = 8.77, linetype = "dashed") +
+  scale_color_manual(
+    values = c(
+      "TMAF (brGDGTs soil and strat)" = "black",
+      "TMAF (brGDGTs)" = "#762A83",
+      "MAAT (Beyer 2020)" = "#0077BB",
+      "TMAF (Beyer 2020)" = "#EE3377",
+      "Ann range (Beyer 2020)" = "#EE7733"
+    )
+  ) + ylab("°C") +
+  theme_bw() + theme(legend.justification = c(1, 1),
+                     legend.position = c(0.99, 0.8))
+p34
+
+#number of months above freezing
+ELSA_pastclim$months_AF <- rowSums(ELSA_pastclim[, 13:24] > 0)
+
+p35 <- ggplot(ELSA_pastclim, aes(x = age_b2k, y = months_AF)) +
+  geom_ribbon(aes(ymin = 0, ymax = months_AF), fill = "darkgray") +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 12), breaks = seq(0, 12, by = 2)) +
+  xlab("Age (b2k)") +
+  ylab("# MAF") + theme_bw() +  xlim(c(0, 60000))
+p35
+```
+# Session info
+```{r}
+Sys.Date()
+sessionInfo()
+```
